@@ -18,9 +18,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install gh
 
-      - name: Authenticate to GitHub CLI
-        run: gh auth login --with-token "$GITHUB_TOKEN"
-
       - name: Get parent issue's project ID and iteration ID
         id: get_project_info
         run: |
