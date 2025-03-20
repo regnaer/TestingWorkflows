@@ -13,10 +13,8 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Set up GitHub CLI
-      uses: cli/setup-gh@v2 # Use cli/setup-gh instead of actions/setup-gh
-      with:
-         github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Install GitHub CLI
+      run: sudo apt-get install -y gh
 
     - name: Get parent issue iteration ID
       id: get-iteration-id
