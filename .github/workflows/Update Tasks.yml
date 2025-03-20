@@ -47,7 +47,6 @@ jobs:
         echo "::set-output name=iteration_id::$ITERATION_ID"
 
     - name: Get sub-issues and update iterations
-      run: |
         PARENT_ISSUE_NUMBER="${{ github.event.issue.number }}"
         PROJECT_ID="${{ steps.get-parent-issue.outputs.project_id }}"
         ITERATION_ID="${{ steps.get-parent-issue.outputs.iteration_id }}"
