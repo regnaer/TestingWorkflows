@@ -18,6 +18,8 @@ jobs:
 
     - name: Get parent issue iteration ID
       id: get-iteration-id
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         issue_id=$(gh issue view ${{ github.event.issue.number }} --json id -q .id)
         project_id=$(gh issue view ${{ github.event.issue.number }} --json projectsV2Items -q '.projectsV2Items[0].project.id')
