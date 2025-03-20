@@ -11,12 +11,12 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
 
     - name: Set up GitHub CLI
-      uses: actions/setup-gh@v2
+      uses: cli/setup-gh@v2 # Use cli/setup-gh instead of actions/setup-gh
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+         github-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Get parent issue iteration ID
       id: get-iteration-id
