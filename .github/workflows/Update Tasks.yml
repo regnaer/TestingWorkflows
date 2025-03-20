@@ -45,24 +45,19 @@ jobs:
         
         iteration_id=$(gh api graphql -F query='
           query {
-            node(id: "$project_id") {
-              ... on ProjectV2 {
-                items(first: 100) {
+            node(id: "$issue_id") {
+              ... on Issue {
+                id
+                title
+                projectItems(first: 100) {
                   nodes {
-                    content {
-                      ... on Issue {
-                        id
-                        title
-                      }
-                    }
+                    id
                     fieldValues(first: 100) {
                       nodes {
                         ... on ProjectV2ItemFieldIterationValue {
                           field {
-                            ... on ProjectV2IterationField {
-                              id
-                              name
-                            }
+                            id
+                            name
                           }
                           duration
                           iterationId
@@ -73,7 +68,7 @@ jobs:
                 }
               }
             }
-          }' -F project_id="$project_id" -q '.data.node.items.nodes | map(select(.content.id == "$issue_id")) | .[0].fieldValues.nodes | map(select(.field.id == "$iteration_field_id")) | .[0].iterationId')
+          }' -F issue_id="$issue_id" -q '.data.node.projectItems.nodes | map(select(.fieldValues.nodes[].field.id == "$iteration_field_id")) | .[0].fieldValues.nodes[].iterationId')
 
         echo "iteration_id=$iteration_id" >> $GITHUB_ENV
 
@@ -129,4 +124,4 @@ jobs:
 
     - name: Error handling
       if: failure()
-      run: echo "An error occurred during the workflow execution."
+      run: echo "An error occurred during the workflow execution."   
