@@ -26,11 +26,11 @@ jobs:
           REPO_NAME=$(echo ${{ github.event.repository.name }})
 
           # Get the project ID associated with the issue
-          PROJECT_ID=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --json projectItems --jq '.[0].project.id' --raw)
+          PROJECT_ID=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --json projectItems --jq '.[0].project.id' | cut -d '"' -f 2)
           echo "PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
 
           # Get the iteration ID from the project
-          ITERATION_ID=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --json projectItems --jq '.[0].fieldValues.nodes[] | select(.field.name == "Iteration") | .id' --raw)
+          ITERATION_ID=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --json projectItems --jq '.[0].fieldValues.nodes[] | select(.field.name == "Iteration") | .id' | cut -d '"' -f 2)
           echo "ITERATION_ID=$ITERATION_ID" >> "$GITHUB_ENV"
           echo "::set-output name=iteration_id::$ITERATION_ID"
 
