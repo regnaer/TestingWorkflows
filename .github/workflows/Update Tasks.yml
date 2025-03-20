@@ -57,18 +57,18 @@ jobs:
           echo "::notice::No sub-issues found."
           exit 0
         fi
-        
+                
         echo "$SUB_ISSUES" | jq -c '.[]' | while read -r SUB_ISSUE_ID; do
           SUB_ISSUE_STATE=$(gh issue view "$SUB_ISSUE_ID" --json state -q '.state')
           if [ "$SUB_ISSUE_STATE" == "OPEN" ]; then
-            PROJECTV2_SUB_ITEM_ID=$(gh api graphql -f query='query { node(id: "$SUB_ISSUE_ID") { ... on Issue { projectItems(first: 100) { nodes { id project { id number } } } } } }' | jq -r '.data.node.projectItems.nodes[0].id')
-
-            if [[ -z "$PROJECTV2_SUB_ITEM_ID" ]]; then
-              echo "::warning::Sub-issue $SUB_ISSUE_ID not found in a ProjectV2."
-              continue
-            fi
+            PROJECTV2_SUB_ITEM_ID=$(gh api graphql -f query='query { node(id:"$SUB_ISSUE_ID") { ... on Issue { projectItems(first:100) { nodes { id project { id number } } } } } }' | jq -r '.data.node.projectItems.nodes[0].id')
+              }
+          if [[ -z "$PROJECTV2_SUB_ITEM_ID" ]]; then
+            echo "::warning::Sub-issue $SUB_ISSUE_ID not found in a ProjectV2."
+          continue
+          fi
             
-            gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: { projectId: "'"$PROJECT_ID"'", itemId: "'"$PROJECTV2_SUB_ITEM_ID"'", fieldId: "'"${{ steps.get-parent-issue.outputs.iteration_id | cut -d':' -f1 }}"'", value: { singleSelectOptionId: "'"${{ steps.get-parent-issue.outputs.iteration_id }}"'" } }) { clientMutationId } }'
+            gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input:{ projectId:"'"$PROJECT_ID"'", itemId:"'"$PROJECTV2_SUB_ITEM_ID"'", fieldId:"'"${{ steps.get-parent-issue.outputs.iteration_id | cut -d':' -f1 }}"'", value:{ singleSelectOptionId:"'"${{ steps.get-parent-issue.outputs.iteration_id }}"'" } }) { clientMutationId } }'
           fi
         done
 
