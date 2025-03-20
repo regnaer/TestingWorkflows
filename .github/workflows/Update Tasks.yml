@@ -1,129 +1,80 @@
-name: Update Tasks
+name: Update Sub-Issues Iteration
 
 on:
   issue_comment:
     types: [created]
-
+    
 jobs:
-  update-tasks:
-    if: github.event.comment.body == 'update tasks'
+  update-sub-issues-iteration:
     runs-on: ubuntu-latest
+    if: github.event.comment.body == 'update tasks'
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
-    - name: Install GitHub CLI
-      run: sudo apt-get install -y gh
+    - name: Set up GitHub CLI
+      uses: cli/setup-gh@v1
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Get parent issue iteration ID
-      id: get-iteration-id
-      env:
-        GH_TOKEN: ${{ github.token }}
+    - name: Get parent issue data
+      id: get-parent-issue
       run: |
-        issue_id=$(gh issue view ${{ github.event.issue.number }} --json id -q .id)
-        project_id=$(gh issue view ${{ github.event.issue.number }} --json projectsV2Items -q '.projectsV2Items[0].project.id')
-        iteration_field_id=$(gh api graphql -F query='
-          query {
-            node(id: "$project_id") {
-              ... on ProjectV2 {
-                fields(first: 100) {
-                  nodes {
-                    ... on ProjectV2IterationField {
-                      id
-                      name
-                      iterations(first: 100) {
-                        nodes {
-                          id
-                          title
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }' -F project_id="$project_id" -q '.data.node.fields.nodes | map(select(.name == "sprint")) | .[0].id')
+        PARENT_ISSUE_NUMBER="${{ github.event.issue.number }}"
+        REPO_NAME="${{ github.repository }}"
         
-        iteration_id=$(gh api graphql -F query='
-          query {
-            node(id: "$issue_id") {
-              ... on Issue {
-                id
-                title
-                projectItems(first: 100) {
-                  nodes {
-                    id
-                    fieldValues(first: 100) {
-                      nodes {
-                        ... on ProjectV2ItemFieldIterationValue {
-                          field {
-                            id
-                            name
-                          }
-                          duration
-                          iterationId
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }' -F issue_id="$issue_id" -q '.data.node.projectItems.nodes | map(select(.fieldValues.nodes[].field.id == "$iteration_field_id")) | .[0].fieldValues.nodes[].iterationId')
+        ISSUE_ID=$(gh issue view "$PARENT_ISSUE_NUMBER" --json id -q '.id')
+        
+        PROJECTV2_ITEM_ID=$(gh api graphql -f query='query { node(id: "$ISSUE_ID") { ... on Issue { projectItems(first: 1) { nodes { id project { id number } fields(first: 100) { nodes { ... on ProjectV2ItemFieldSingleSelect { name field { ... on ProjectV2Field { id } } option { id } } } } } } } }' | jq -r '.data.node.projectItems.nodes[0].id')
 
-        echo "iteration_id=$iteration_id" >> $GITHUB_ENV
+        if [[ -z "$PROJECTV2_ITEM_ID" ]]; then
+          echo "::error::Issue not found in a ProjectV2."
+          exit 1
+        fi
 
-    - name: Get open sub-issues
-      id: get-open-sub-issues
+        ITERATION_ID=$(gh api graphql -f query='query { node(id: "$PROJECTV2_ITEM_ID") { ... on ProjectV2Item { fields(first:100) { nodes { ... on ProjectV2ItemFieldSingleSelect { name field { ... on ProjectV2Field { id } } option { id } } } } } }' | jq -r '.data.node.fields.nodes[] | select(.name == "sprint").option.id')
+
+        if [[ -z "$ITERATION_ID" ]]; then
+          echo "::error::Iteration (sprint) field not found or not set."
+          exit 1
+        fi
+        
+        PROJECT_ID=$(gh api graphql -f query='query { node(id: "$PROJECTV2_ITEM_ID") { ... on ProjectV2Item { project { id } } } }' | jq -r '.data.node.project.project.id')
+
+        echo "::set-output name=issue_id::$ISSUE_ID"
+        echo "::set-output name=project_id::$PROJECT_ID"
+        echo "::set-output name=iteration_id::$ITERATION_ID"
+
+    - name: Get sub-issues and update iterations
       run: |
-        open_sub_issues=$(gh api graphql -F query='
-          query {
-            node(id: "$issue_id") {
-              ... on Issue {
-                id
-                title
-                timelineItems(itemTypes: [TRACKED_BY_EVENT]) {
-                  nodes {
-                    ... on TrackedByEvent {
-                      subject {
-                        ... on Issue {
-                          id
-                          state
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }' -F issue_id="$issue_id" -q '.data.node.timelineItems.nodes | map(select(.subject.state == "OPEN")) | .[].subject.id')
+        PARENT_ISSUE_NUMBER="${{ github.event.issue.number }}"
+        PROJECT_ID="${{ steps.get-parent-issue.outputs.project_id }}"
+        ITERATION_ID="${{ steps.get-parent-issue.outputs.iteration_id }}"
+        
+        SUB_ISSUES=$(gh api issues/$PARENT_ISSUE_NUMBER/sub-issues --json number,state,id -q '.[].id' | jq -r '.[]')
 
-        echo "open_sub_issues=$open_sub_issues" >> $GITHUB_ENV
+        if [[ -z "$SUB_ISSUES" ]]; then
+          echo "::notice::No sub-issues found."
+          exit 0
+        fi
+        
+        echo "$SUB_ISSUES" | jq -c '.[]' | while read -r SUB_ISSUE_ID; do
+          SUB_ISSUE_STATE=$(gh issue view "$SUB_ISSUE_ID" --json state -q '.state')
+          if [ "$SUB_ISSUE_STATE" == "OPEN" ]; then
+            PROJECTV2_SUB_ITEM_ID=$(gh api graphql -f query='query { node(id: "$SUB_ISSUE_ID") { ... on Issue { projectItems(first: 100) { nodes { id project { id number } } } } } }' | jq -r '.data.node.projectItems.nodes[0].id')
 
-    - name: Update sub-issues iteration
-      run: |
-        for sub_issue_id in $open_sub_issues
-        do
-          gh api graphql -F query='
-            mutation($sub_issue_id: ID!, $iteration_field_id: ID!, $iteration_id: ID!) {
-              updateProjectV2ItemFieldValue(
-                input: {
-                  projectId: "$project_id"
-                  itemId: "$sub_issue_id"
-                  fieldId: "$iteration_field_id"
-                  value: {
-                    iterationId: "$iteration_id"
-                  }
-                }
-              ) {
-                projectV2Item {
-                  id
-                }
-              }
-            }' -F sub_issue_id="$sub_issue_id" -F iteration_field_id="$iteration_field_id" -F iteration_id="$iteration_id"
+            if [[ -z "$PROJECTV2_SUB_ITEM_ID" ]]; then
+              echo "::warning::Sub-issue $SUB_ISSUE_ID not found in a ProjectV2."
+              continue
+            fi
+            
+            gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: { projectId: "'"$PROJECT_ID"'", itemId: "'"$PROJECTV2_SUB_ITEM_ID"'", fieldId: "'"${{ steps.get-parent-issue.outputs.iteration_id | cut -d':' -f1 }}"'", value: { singleSelectOptionId: "'"${{ steps.get-parent-issue.outputs.iteration_id }}"'" } }) { clientMutationId } }'
+          fi
         done
 
     - name: Error handling
       if: failure()
-      run: echo "An error occurred during the workflow execution."   
+      run: |
+        echo "An error occurred during the workflow execution."
+        exit 1
