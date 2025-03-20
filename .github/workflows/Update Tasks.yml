@@ -1,0 +1,95 @@
+name: Update Tasks
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  update-tasks:
+    if: github.event.comment.body == 'update tasks'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up GitHub CLI
+        uses: actions/setup-gh-cli@v1
+        with:
+          version: latest
+
+      - name: Identify iteration ID of the parent issue
+        id: identify-iteration
+        run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          PARENT_ISSUE_ID=$(gh api graphql -f query='
+          query($issue_number: Int!, $repo: String!, $owner: String!) {
+            repository(name: $repo, owner: $owner) {
+              issue(number: $issue_number) {
+                id
+                projectItems(first: 5) {
+                  nodes {
+                    fieldValues(first: 5) {
+                      nodes {
+                        ... on ProjectV2ItemFieldIterationValue {
+                          iterationId
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          ' -f issue_number=$ISSUE_NUMBER -f repo=${{ github.repository }} -f owner=${{ github.repository_owner }} --jq '.data.repository.issue.projectItems.nodes[].fieldValues.nodes[]?.iterationId' || echo "")
+          if [[ -z "$PARENT_ISSUE_ID" ]]; then
+            echo "Error: Parent issue iteration ID not found."
+            exit 1
+          fi
+          echo "Parent issue iteration ID: $PARENT_ISSUE_ID"
+          echo "iteration_id=$PARENT_ISSUE_ID" >> $GITHUB_ENV
+
+      - name: Identify open sub-issues
+        id: identify-subissues
+        run: |
+          SUB_ISSUES=$(gh api graphql -f query='
+          query($issue_number: Int!, $repo: String!, $owner: String!) {
+            repository(name: $repo, owner: $owner) {
+              issue(number: $issue_number) {
+                timelineItems(first: 50, itemTypes: [CONNECTED_EVENT]) {
+                  nodes {
+                    ... on ConnectedEvent {
+                      subject {
+                        ... on Issue {
+                          number
+                          state
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          ' -f issue_number=${{ github.event.issue.number }} -f repo=${{ github.repository }} -f owner=${{ github.repository_owner }} --jq '.data.repository.issue.timelineItems.nodes[] | select(.subject.state == "OPEN") | .subject.number' || echo "")
+          
+          if [[ -z "$SUB_ISSUES" ]]; then
+            echo "No open sub-issues found."
+            exit 0
+          fi
+          echo "Open sub-issues: $SUB_ISSUES"
+          echo "sub_issues=$SUB_ISSUES" >> $GITHUB_ENV
+
+      - name: Update sub-issues iteration
+        run: |
+          PARENT_ITERATION_ID=${{ env.iteration_id }}
+          for SUB_ISSUE in ${{ env.sub_issues }}; do
+            gh api graphql -f query='
+            mutation($issue_id: ID!, $iteration_id: String!) {
+              updateIssue(input: {id: $issue_id, iterationId: $iteration_id}) {
+                issue {
+                  id
+                }
+              }
+            }
+            ' -f issue_id=$SUB_ISSUE -f iteration_id=$PARENT_ITERATION_ID || echo "Error updating sub-issue #$SUB_ISSUE"
+          done
