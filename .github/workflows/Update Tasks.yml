@@ -1,93 +1,104 @@
-name: Update Tasks
+name: Update Sub-Issue Iterations
 
 on:
   issue_comment:
     types: [created]
 
 jobs:
-  update-tasks:
+  update_iterations:
     if: github.event.comment.body == 'update tasks'
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
-      - name: Set up GitHub CLI
-        uses: cli/gh-actions@v2
-
-      - name: Identify iteration ID of the parent issue
-        id: identify-iteration
+      - name: Install GitHub CLI
         run: |
-          ISSUE_NUMBER=${{ github.event.issue.number }}
-          PARENT_ISSUE_ID=$(gh api graphql -f query='
-          query($issue_number: Int!, $repo: String!, $owner: String!) {
-            repository(name: $repo, owner: $owner) {
-              issue(number: $issue_number) {
+          sudo apt-get update
+          sudo apt-get install gh
+
+      - name: Authenticate to GitHub CLI
+        run: gh auth login --with-token "$GITHUB_TOKEN"
+
+      - name: Get parent issue's project ID and iteration ID
+        id: get_project_info
+        run: |
+          ISSUE_NUMBER=$(echo ${{ github.event.issue.number }})
+          REPO_OWNER=$(echo ${{ github.repository_owner }})
+          REPO_NAME=$(echo ${{ github.event.repository.name }})
+
+          # Get the project ID associated with the issue
+          PROJECT_ID=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --json projectItems --jq '.[0].project.id' --raw)
+          echo "PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
+
+          # Get the iteration ID from the project
+          ITERATION_ID=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --json projectItems --jq '.[0].fieldValues.nodes[] | select(.field.name == "Iteration") | .id' --raw)
+          echo "ITERATION_ID=$ITERATION_ID" >> "$GITHUB_ENV"
+          echo "::set-output name=iteration_id::$ITERATION_ID"
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get sub-issues (GraphQL)
+        id: get_sub_issues
+        run: |
+          PARENT_ISSUE_NUMBER=$(echo ${{ github.event.issue.number }})
+          REPO_OWNER=$(echo ${{ github.repository_owner }})
+          REPO_NAME=$(echo ${{ github.event.repository.name }})
+
+          QUERY='
+          query GetSubIssues($owner: String!, $repo: String!, $issueNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $issueNumber) {
                 id
-                projectItems(first: 5) {
+                body
+                children(first: 100) {
                   nodes {
-                    fieldValues(first: 5) {
-                      nodes {
-                        ... on ProjectV2ItemFieldIterationValue {
-                          iterationId
-                        }
-                      }
+                    ... on Issue {
+                      number
+                      state
                     }
                   }
                 }
               }
             }
           }
-          ' -f issue_number=$ISSUE_NUMBER -f repo=${{ github.repository }} -f owner=${{ github.repository_owner }} --jq '.data.repository.issue.projectItems.nodes[].fieldValues.nodes[]?.iterationId' || echo "")
-          if [[ -z "$PARENT_ISSUE_ID" ]]; then
-            echo "Error: Parent issue iteration ID not found."
-            exit 1
-          fi
-          echo "Parent issue iteration ID: $PARENT_ISSUE_ID"
-          echo "iteration_id=$PARENT_ISSUE_ID" >> $GITHUB_ENV
+          '
 
-      - name: Identify open sub-issues
-        id: identify-subissues
+          RESPONSE=$(gh api graphql --paginate -f query="$QUERY" -f owner="$REPO_OWNER" -f repo="$REPO_NAME" -f issueNumber="$PARENT_ISSUE_NUMBER")
+
+          OPEN_SUB_ISSUES=$(echo "$RESPONSE" | jq '.data.repository.issue.children.nodes[] | select(.state == "OPEN") | .number' | jq -c .)
+          echo "OPEN_SUB_ISSUES=$OPEN_SUB_ISSUES" >> "$GITHUB_ENV"
+          echo "::set-output name=open_sub_issues::$OPEN_SUB_ISSUES"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update sub-issue iterations
         run: |
-          SUB_ISSUES=$(gh api graphql -f query='
-          query($issue_number: Int!, $repo: String!, $owner: String!) {
-            repository(name: $repo, owner: $owner) {
-              issue(number: $issue_number) {
-                timelineItems(first: 50, itemTypes: [CONNECTED_EVENT]) {
-                  nodes {
-                    ... on ConnectedEvent {
-                      subject {
-                        ... on Issue {
-                          number
-                          state
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-          ' -f issue_number=${{ github.event.issue.number }} -f repo=${{ github.repository }} -f owner=${{ github.repository_owner }} --jq '.data.repository.issue.timelineItems.nodes[] | select(.subject.state == "OPEN") | .subject.number' || echo "")
-          
-          if [[ -z "$SUB_ISSUES" ]]; then
-            echo "No open sub-issues found."
+          if [ -z "$OPEN_SUB_ISSUES" ]; then
+            echo "No open sub-issues found. Skipping update."
             exit 0
           fi
-          echo "Open sub-issues: $SUB_ISSUES"
-          echo "sub_issues=$SUB_ISSUES" >> $GITHUB_ENV
 
-      - name: Update sub-issues iteration
-        run: |
-          PARENT_ITERATION_ID=${{ env.iteration_id }}
-          for SUB_ISSUE in ${{ env.sub_issues }}; do
-            gh api graphql -f query='
-            mutation($issue_id: ID!, $iteration_id: String!) {
-              updateIssue(input: {id: $issue_id, iterationId: $iteration_id}) {
-                issue {
-                  id
-                }
-              }
-            }
-            ' -f issue_id=$SUB_ISSUE -f iteration_id=$PARENT_ITERATION_ID || echo "Error updating sub-issue #$SUB_ISSUE"
+          PARENT_ISSUE_NUMBER=$(echo ${{ github.event.issue.number }})
+          REPO_OWNER=$(echo ${{ github.repository_owner }})
+          REPO_NAME=$(echo ${{ github.event.repository.name }})
+          ITERATION_ID=$(echo ${{ env.ITERATION_ID }})
+
+          # Remove brackets and spaces from the OPEN_SUB_ISSUES array
+          OPEN_SUB_ISSUES=$(echo "$OPEN_SUB_ISSUES" | tr -d '[]')
+          OPEN_SUB_ISSUES=$(echo "$OPEN_SUB_ISSUES" | sed 's/ //g')
+
+          # Iterate through the sub-issues and update their iteration
+          IFS=','
+          read -r -a SUB_ISSUE_ARRAY <<< "$OPEN_SUB_ISSUES"
+
+          for SUB_ISSUE_NUMBER in "${SUB_ISSUE_ARRAY[@]}"; do
+            if [ -n "$SUB_ISSUE_NUMBER" ]; then
+              echo "Updating iteration for sub-issue: $SUB_ISSUE_NUMBER to iteration id: $ITERATION_ID"
+              gh issue edit "$REPO_OWNER/$REPO_NAME#$SUB_ISSUE_NUMBER" --project-add "$PROJECT_ID" --project-field "Iteration"="$ITERATION_ID" || echo "Failed to update sub-issue: $SUB_ISSUE_NUMBER"
+            fi
           done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
