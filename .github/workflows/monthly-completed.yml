@@ -1,0 +1,111 @@
+name: Monthly Completed
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find_closed_issues:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16'
+
+    - name: Install dependencies
+      run: npm install @octokit/rest csv-writer
+
+    - name: Find closed issues within 30 days
+      id: find_issues
+      continue-on-error: true
+      run: |
+        const { Octokit } = require("@octokit/rest");
+        const { createObjectCsvWriter } = require('csv-writer');
+        const fs = require('fs');
+        const owner = 'regnaer';
+        const repo = 'TestingWorkflows';
+        const projectNumber = 2;
+
+        async function getClosedIssues() {
+          try {
+            const { data: issues } = await octokit.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:issue is:closed closed:>=${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}`,
+            });
+            return issues.items;
+          } catch (error) {
+            console.error('Error fetching closed issues:', error);
+            process.exit(1);
+          }
+        }
+
+        async function getProjectFields(issue) {
+          try {
+            const { data: project } = await octokit.projects.get({
+              project_id: projectNumber,
+            });
+            const { data: columns } = await octokit.projects.listColumns({
+              project_id: project.id,
+            });
+            let fields = {};
+            for (const column of columns) {
+              const { data: cards } = await octokit.projects.listCards({
+                column_id: column.id,
+              });
+              for (const card of cards.filter(card => card.content_url.includes(`/issues/${issue.number}`))) {
+                fields[column.name] = card.note;
+              }
+            }
+            return fields;
+          } catch (error) {
+            console.error(`Error fetching project fields for issue #${issue.number}:`, error);
+            return {};
+          }
+        }
+
+        async function generateReport() {
+          try {
+            const issues = await getClosedIssues();
+            const records = await Promise.all(issues.map(async issue => {
+              const fields = await getProjectFields(issue);
+              return {
+                number: issue.number,
+                title: issue.title,
+                url: issue.html_url,
+                ...fields,
+              };
+            }));
+            const csvWriter = createObjectCsvWriter({
+              path: 'issues_report.csv',
+              header: [
+                { id: 'number', title: 'Number' },
+                { id: 'title', title: 'Title' },
+                { id: 'url', title: 'URL' },
+                ...Object.keys(records[0]).filter(key => !['number', 'title', 'url'].includes(key)).map(field => ({ id: field, title: field })),
+              ]
+            });
+            await csvWriter.writeRecords(records);
+            fs.writeFileSync('issues_report.json', JSON.stringify(records, null, 2));
+          } catch (error) {
+            console.error('Error generating report:', error);
+            process.exit(1);
+          }
+        }
+
+        generateReport();
+
+    - name: Upload CSV report
+      if: success() || failure()
+      uses: actions/upload-artifact@v2
+      with:
+        name: issues-report-csv
+        path: issues_report.csv
+
+    - name: Upload JSON report
+      if: success() || failure()
+      uses: actions/upload-artifact@v2
+      with:
+        name: issues-report-json
+        path: issues_report.json
