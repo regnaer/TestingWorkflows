@@ -35,7 +35,7 @@ jobs:
 
         async function getClosedIssues() {
           try {
-            const { data: issues } = await octokit.search.issuesAndPullRequests({
+            const { data: issues } = await octokit.request('GET /search/issues', {
               q: 'repo:' + owner + '/' + repo + ' is:issue is:closed closed:>=' + new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             });
             return issues.items;
@@ -47,15 +47,15 @@ jobs:
 
         async function getProjectFields(issue) {
           try {
-            const { data: project } = await octokit.projects.get({
+            const { data: project } = await octokit.rest.projects.get({
               project_id: projectNumber,
             });
-            const { data: columns } = await octokit.projects.listColumns({
+            const { data: columns } = await octokit.rest.projects.listColumns({
               project_id: project.id,
             });
             let fields = {};
             for (const column of columns) {
-              const { data: cards } = await octokit.projects.listCards({
+              const { data: cards } = await octokit.rest.projects.listCards({
                 column_id: column.id,
               });
               for (const card of cards.filter(card => card.content_url.includes('/issues/' + issue.number))) {
@@ -87,7 +87,7 @@ jobs:
                 { id: 'number', title: 'Number' },
                 { id: 'title', title: 'Title' },
                 { id: 'url', title: 'URL' },
-                ...Object.keys(records[0]).filter(key => !['number', 'title', 'url'].includes(key)).map(field => ({ id: field, title: field })),
+                ...Object.keys(records[0] || {}).filter(key => !['number', 'title', 'url'].includes(key)).map(field => ({ id: field, title: field })),
               ]
             });
             await csvWriter.writeRecords(records);
