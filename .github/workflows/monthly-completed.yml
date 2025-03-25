@@ -25,9 +25,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         node -e '
-        import fetch from "node-fetch";
-        import { createObjectCsvWriter } from "csv-writer";
-        import fs from "fs";
+        const fetch = require("node-fetch");
+        const { createObjectCsvWriter } = require("csv-writer");
+        const fs = require("fs");
         const owner = "regnaer";
         const repo = "TestingWorkflows";
         const projectNumber = 2;
@@ -90,7 +90,7 @@ jobs:
                 }
               });
               const cards = await cardsResponse.json();
-              for (const card of cards.filter(card => card.content_url.includes(`/issues/${issue.number}`))) {
+              for (const card of cards.filter(card => card.content_url && card.content_url.includes(`/issues/${issue.number}`))) {
                 fields[column.name] = card.note;
               }
             }
@@ -105,6 +105,7 @@ jobs:
           try {
             const issues = await getClosedIssues();
             const records = await Promise.all(issues.map(async issue => {
+              if (!issue || !issue.number) return null;
               const fields = await getProjectFields(issue);
               return {
                 number: issue.number,
@@ -113,17 +114,18 @@ jobs:
                 ...fields,
               };
             }));
+            const validRecords = records.filter(record => record !== null);
             const csvWriter = createObjectCsvWriter({
               path: "issues_report.csv",
               header: [
                 { id: "number", title: "Number" },
                 { id: "title", title: "Title" },
                 { id: "url", title: "URL" },
-                ...Object.keys(records[0] || {}).filter(key => !["number", "title", "url"].includes(key)).map(field => ({ id: field, title: field })),
+                ...Object.keys(validRecords[0] || {}).filter(key => !["number", "title", "url"].includes(key)).map(field => ({ id: field, title: field })),
               ]
             });
-            await csvWriter.writeRecords(records);
-            fs.writeFileSync("issues_report.json", JSON.stringify(records, null, 2));
+            await csvWriter.writeRecords(validRecords);
+            fs.writeFileSync("issues_report.json", JSON.stringify(validRecords, null, 2));
           } catch (error) {
             console.error("Error generating report:", error);
             process.exit(1);
