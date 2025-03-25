@@ -35,7 +35,7 @@ jobs:
         async function getClosedIssues() {
           const query = `
             query {
-              search(query: \"repo:${owner}/${repo} is:issue is:closed closed:>=${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\", type: ISSUE, first: 100) {
+              search(query: \\"repo:${owner}/${repo} is:issue is:closed closed:>=${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\\", type: ISSUE, first: 100) {
                 nodes {
                   ... on Issue {
                     number
@@ -65,7 +65,7 @@ jobs:
 
         async function getProjectFields(issue) {
           try {
-            const projectResponse = await fetch(`https://api.github.com/projects/${projectNumber}`, {
+            const projectResponse = await fetch(\`https://api.github.com/projects/${projectNumber}\`, {
               headers: {
                 'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN,
                 'Accept': 'application/vnd.github.inertia-preview+json'
@@ -90,13 +90,13 @@ jobs:
                 }
               });
               const cards = await cardsResponse.json();
-              for (const card of cards.filter(card => card.content_url.includes(`/issues/${issue.number}`))) {
+              for (const card of cards.filter(card => card.content_url.includes(\`/issues/${issue.number}\`))) {
                 fields[column.name] = card.note;
               }
             }
             return fields;
           } catch (error) {
-            console.error(`Error fetching project fields for issue #${issue.number}:`, error);
+            console.error(\`Error fetching project fields for issue #${issue.number}:\`, error);
             return {};
           }
         }
