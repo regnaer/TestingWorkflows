@@ -16,7 +16,7 @@ jobs:
         node-version: '22'
 
     - name: Install dependencies
-      run: npm install node-fetch@2 csv-writer
+      run: npm install node-fetch@3 csv-writer
 
     - name: Find closed issues within 30 days
       id: find_issues
@@ -25,9 +25,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         node -e '
-        const fetch = require("node-fetch");
-        const { createObjectCsvWriter } = require("csv-writer");
-        const fs = require("fs");
+        import fetch from "node-fetch";
+        import { createObjectCsvWriter } from "csv-writer";
+        import fs from "fs";
         const owner = "regnaer";
         const repo = "TestingWorkflows";
         const projectNumber = 2;
