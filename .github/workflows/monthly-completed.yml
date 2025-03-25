@@ -24,18 +24,18 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        node -e "
-        const fetch = require('node-fetch');
-        const { createObjectCsvWriter } = require('csv-writer');
-        const fs = require('fs');
-        const owner = 'regnaer';
-        const repo = 'TestingWorkflows';
+        node -e '
+        const fetch = require("node-fetch");
+        const { createObjectCsvWriter } = require("csv-writer");
+        const fs = require("fs");
+        const owner = "regnaer";
+        const repo = "TestingWorkflows";
         const projectNumber = 2;
 
         async function getClosedIssues() {
           const query = `
             query {
-              search(query: \\"repo:${owner}/${repo} is:issue is:closed closed:>=${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}\\", type: ISSUE, first: 100) {
+              search(query: "repo:${owner}/${repo} is:issue is:closed closed:>=${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]}", type: ISSUE, first: 100) {
                 nodes {
                   ... on Issue {
                     number
@@ -47,36 +47,36 @@ jobs:
             }
           `;
           try {
-            const response = await fetch('https://api.github.com/graphql', {
-              method: 'POST',
+            const response = await fetch("https://api.github.com/graphql", {
+              method: "POST",
               headers: {
-                'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN,
-                'Content-Type': 'application/json'
+                "Authorization": "Bearer " + process.env.GITHUB_TOKEN,
+                "Content-Type": "application/json"
               },
               body: JSON.stringify({ query })
             });
             const data = await response.json();
             return data.data.search.nodes;
           } catch (error) {
-            console.error('Error fetching closed issues:', error);
+            console.error("Error fetching closed issues:", error);
             process.exit(1);
           }
         }
 
         async function getProjectFields(issue) {
           try {
-            const projectResponse = await fetch(\`https://api.github.com/projects/${projectNumber}\`, {
+            const projectResponse = await fetch(`https://api.github.com/projects/${projectNumber}`, {
               headers: {
-                'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN,
-                'Accept': 'application/vnd.github.inertia-preview+json'
+                "Authorization": "Bearer " + process.env.GITHUB_TOKEN,
+                "Accept": "application/vnd.github.inertia-preview+json"
               }
             });
             const project = await projectResponse.json();
 
             const columnsResponse = await fetch(project.columns_url, {
               headers: {
-                'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN,
-                'Accept': 'application/vnd.github.inertia-preview+json'
+                "Authorization": "Bearer " + process.env.GITHUB_TOKEN,
+                "Accept": "application/vnd.github.inertia-preview+json"
               }
             });
             const columns = await columnsResponse.json();
@@ -85,18 +85,18 @@ jobs:
             for (const column of columns) {
               const cardsResponse = await fetch(column.cards_url, {
                 headers: {
-                  'Authorization': 'Bearer ' + process.env.GITHUB_TOKEN,
-                  'Accept': 'application/vnd.github.inertia-preview+json'
+                  "Authorization": "Bearer " + process.env.GITHUB_TOKEN,
+                  "Accept": "application/vnd.github.inertia-preview+json"
                 }
               });
               const cards = await cardsResponse.json();
-              for (const card of cards.filter(card => card.content_url.includes(\`/issues/${issue.number}\`))) {
+              for (const card of cards.filter(card => card.content_url.includes(`/issues/${issue.number}`))) {
                 fields[column.name] = card.note;
               }
             }
             return fields;
           } catch (error) {
-            console.error(\`Error fetching project fields for issue #${issue.number}:\`, error);
+            console.error(`Error fetching project fields for issue #${issue.number}:`, error);
             return {};
           }
         }
@@ -114,24 +114,24 @@ jobs:
               };
             }));
             const csvWriter = createObjectCsvWriter({
-              path: 'issues_report.csv',
+              path: "issues_report.csv",
               header: [
-                { id: 'number', title: 'Number' },
-                { id: 'title', title: 'Title' },
-                { id: 'url', title: 'URL' },
-                ...Object.keys(records[0] || {}).filter(key => !['number', 'title', 'url'].includes(key)).map(field => ({ id: field, title: field })),
+                { id: "number", title: "Number" },
+                { id: "title", title: "Title" },
+                { id: "url", title: "URL" },
+                ...Object.keys(records[0] || {}).filter(key => !["number", "title", "url"].includes(key)).map(field => ({ id: field, title: field })),
               ]
             });
             await csvWriter.writeRecords(records);
-            fs.writeFileSync('issues_report.json', JSON.stringify(records, null, 2));
+            fs.writeFileSync("issues_report.json", JSON.stringify(records, null, 2));
           } catch (error) {
-            console.error('Error generating report:', error);
+            console.error("Error generating report:", error);
             process.exit(1);
           }
         }
 
         generateReport();
-        "
+        '
 
     - name: Upload CSV report
       if: success() || failure()
