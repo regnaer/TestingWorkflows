@@ -98,7 +98,7 @@ jobs:
 
     - name: Upload CSV report
       if: success() || failure()
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: issues-report-csv
         path: issues_report.csv
