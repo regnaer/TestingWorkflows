@@ -22,7 +22,8 @@ jobs:
       id: find_issues
       continue-on-error: true
       run: |
-        const { Octokit } = require("@octokit/rest");
+        node -e "
+        const { Octokit } = require('@octokit/rest');
         const { createObjectCsvWriter } = require('csv-writer');
         const fs = require('fs');
         const owner = 'regnaer';
@@ -31,6 +32,7 @@ jobs:
 
         async function getClosedIssues() {
           try {
+            const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
             const { data: issues } = await octokit.search.issuesAndPullRequests({
               q: `repo:${owner}/${repo} is:issue is:closed closed:>=${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}`,
             });
@@ -43,6 +45,7 @@ jobs:
 
         async function getProjectFields(issue) {
           try {
+            const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
             const { data: project } = await octokit.projects.get({
               project_id: projectNumber,
             });
@@ -54,13 +57,13 @@ jobs:
               const { data: cards } = await octokit.projects.listCards({
                 column_id: column.id,
               });
-              for (const card of cards.filter(card => card.content_url.includes(`/issues/${issue.number}`))) {
+              for (const card of cards.filter(card => card.content_url.includes('/issues/' + issue.number))) {
                 fields[column.name] = card.note;
               }
             }
             return fields;
           } catch (error) {
-            console.error(`Error fetching project fields for issue #${issue.number}:`, error);
+            console.error('Error fetching project fields for issue #' + issue.number + ':', error);
             return {};
           }
         }
@@ -95,6 +98,7 @@ jobs:
         }
 
         generateReport();
+        "
 
     - name: Upload CSV report
       if: success() || failure()
