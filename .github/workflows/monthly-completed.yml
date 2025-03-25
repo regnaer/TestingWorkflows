@@ -16,7 +16,7 @@ jobs:
         node-version: '22'
 
     - name: Install dependencies
-      run: npm install node-fetch csv-writer
+      run: npm install node-fetch@2 csv-writer
 
     - name: Find closed issues within 30 days
       id: find_issues
