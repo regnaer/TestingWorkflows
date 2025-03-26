@@ -55,10 +55,13 @@ jobs:
           }
           `;
 
-          graphql(query, {
-            issueNumber,
-            owner,
-            repo,
+          graphql({
+            query,
+            variables: {
+              issueNumber,
+              owner,
+              repo
+            },
             headers: {
               authorization: `token ${token}`
             }
@@ -67,8 +70,8 @@ jobs:
             const sprintField = result.repository.issue.projectItems.nodes[0].fieldValues.nodes.find(field => field.projectField.name === 'Sprint');
             const sprintValue = sprintField ? sprintField.value : null;
 
-            console.log(`::set-output name=issue-id::${issueId}`);
-            console.log(`::set-output name=sprint-value::${sprintValue}`);
+            console.log(`issue-id=${issueId}`);
+            console.log(`sprint-value=${sprintValue}`);
           }).catch(error => {
             console.error(error);
             process.exit(1);
@@ -79,6 +82,7 @@ jobs:
           GITHUB_EVENT: ${{ toJson(github.event) }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Sub-Issues
         id: get-sub-issues
