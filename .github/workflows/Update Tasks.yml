@@ -25,12 +25,12 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }} > parent_issue.json
           echo "SPRINT_FIELD=$(jq -r '.fields.customfield_PVTIF_lAHOAYT8e84A0x6mzgqW4r0' parent_issue.json)" >> $GITHUB_ENV
 
-      - name: Get all open sub-issues
+      - name: Get all sub-issues
         id: get-sub-issues
         run: |
           SUB_ISSUES=$(curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/issues?state=open&labels=sub-issue")
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/sub_issues)
           echo "SUB_ISSUES=$SUB_ISSUES" >> $GITHUB_ENV
 
       - name: Update sub-issues' Sprint field
