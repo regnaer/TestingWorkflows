@@ -1,179 +1,256 @@
-name: Update Sub-Issues Sprint Field
+name: Update Sub-issue Sprints
 
 on:
   issue_comment:
     types: [created]
 
 jobs:
-  update-sub-issues:
-    runs-on: ubuntu-latest
+  update_sprints:
     if: github.event.comment.body == 'update tasks'
+    runs-on: ubuntu-latest
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v3
         with:
-          node-version: '22'
+          node-version: 18
 
       - name: Install dependencies
         run: npm install @octokit/graphql
 
-      - name: Get Issue Data
-        id: get-issue-data
+      - name: Get issue sprint
+        id: get-sprint
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
         run: |
-          node <<EOF
-          const { graphql } = require("@octokit/graphql");
-
-          const issueNumber = process.env.GITHUB_EVENT.issue.number;
-          const owner = process.env.GITHUB_REPOSITORY_OWNER;
-          const repo = process.env.GITHUB_REPOSITORY.split("/")[1];
-          const token = process.env.GITHUB_TOKEN;
+          const { graphql } = require('@octokit/graphql');
 
           const query = `
-          query($issueNumber: Int!, $owner: String!, $repo: String!) {
-            repository(owner: $owner, name: $repo) {
-              issue(number: $issueNumber) {
-                id
-                projectItems(first: 1) {
-                  nodes {
-                    id
-                    fieldValues(first: 10) {
+            query {
+              repository(owner: "${process.env.OWNER}", name: "${process.env.REPO}") {
+                issue(number: ${process.env.ISSUE_NUMBER}) {
+                  projectItems(first: 100, states: [OPEN]) {
+                    nodes {
+                      project {
+                        number
+                      }
+                    }
+                  }
+                }
+              }
+              user(login: "${process.env.OWNER}") {
+                projectV2(number: 2) {
+                    items(first: 20) {
                       nodes {
-                        projectField {
-                          id
-                          name
+                        content {
+                          ... on Issue {
+                            url
+                            title
+                            state
+                            assignees(first: 10) {
+                              nodes {
+                                login
+                              }
+                            }
+                            labels(first: 10) {
+                              nodes {
+                                name
+                              }
+                            }
+                            updatedAt
+                          }
                         }
-                        value
+                        sprint: fieldValueByName(name: "Sprint") {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            duration
+                            startDate
+                            title
+                          }
+                        }
+                      }
+                      pageInfo {
+                        hasNextPage
+                        endCursor
                       }
                     }
                   }
                 }
               }
             }
-          }
           `;
 
           graphql({
-            query,
-            variables: {
-              issueNumber,
-              owner,
-              repo
-            },
+            query: query,
             headers: {
-              authorization: `token ${token}`
-            }
-          }).then(result => {
-            const issueId = result.repository.issue.id;
-            const sprintField = result.repository.issue.projectItems.nodes[0].fieldValues.nodes.find(field => field.projectField.name === 'Sprint');
-            const sprintValue = sprintField ? sprintField.value : null;
-
-            console.log(`issue-id=${issueId}`);
-            console.log(`sprint-value=${sprintValue}`);
+              authorization: `token ${process.env.GITHUB_TOKEN}`,
+            },
+          }).then((result) => {
+            const sprint = result.user.projectV2.items.nodes[0].sprint;
+            console.log('Sprint:', sprint);
+            core.setOutput('sprint', JSON.stringify(sprint));
           }).catch(error => {
-            console.error(error);
+            console.error('Error fetching sprint:', error);
             process.exit(1);
           });
-          EOF
+
+      - name: Get sub-issues
+        id: get-sub-issues
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_EVENT: ${{ toJson(github.event) }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-
-      - name: Get Sub-Issues
-        id: get-sub-issues
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
         run: |
-          node <<EOF
-          const { graphql } = require("@octokit/graphql");
-
-          const issueId = process.env.ISSUE_ID;
-          const owner = process.env.GITHUB_REPOSITORY_OWNER;
-          const repo = process.env.GITHUB_REPOSITORY.split("/")[1];
-          const token = process.env.GITHUB_TOKEN;
+          const { graphql } = require('@octokit/graphql');
 
           const query = `
-          query($issueId: ID!) {
-            node(id: $issueId) {
-              ... on Issue {
-                timelineItems(itemTypes: [CONNECTED_EVENT], first: 100) {
-                  nodes {
-                    ... on ConnectedEvent {
-                      subject {
-                        ... on Issue {
-                          id
-                          state
-                        }
+            query GetSubIssues($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
+                  body
+                  comments(first: 100) {
+                    nodes {
+                      body
+                      author {
+                        login
                       }
                     }
                   }
                 }
               }
             }
-          }
           `;
 
-          graphql(query, {
-            issueId,
+          graphql({
+            query: query,
+            owner: process.env.OWNER,
+            repo: process.env.REPO,
+            issueNumber: parseInt(process.env.ISSUE_NUMBER),
             headers: {
-              authorization: `token ${token}`
-            }
-          }).then(result => {
-            const subIssues = result.node.timelineItems.nodes
-              .filter(event => event.subject.state === 'OPEN')
-              .map(event => event.subject.id);
+              authorization: `token ${process.env.GITHUB_TOKEN}`,
+            },
+          }).then((result) => {
+            const issueBody = result.repository.issue.body;
+            const comments = result.repository.issue.comments.nodes;
+            const subIssueRegex = /\[(x|\s)?\]\s*#(\d+)/g;
+            let match;
+            const subIssues = [];
 
-            console.log(`::set-output name=sub-issues::${subIssues.join(',')}`);
+            // Extract sub-issue numbers from issue body
+            while ((match = subIssueRegex.exec(issueBody)) !== null) {
+              const subIssueNumber = parseInt(match[2], 10);
+              subIssues.push(subIssueNumber);
+            }
+
+            // Extract sub-issue numbers from comments (if needed)
+            for (const comment of comments) {
+              while ((match = subIssueRegex.exec(comment.body)) !== null) {
+                const subIssueNumber = parseInt(match[2], 10);
+                if (!subIssues.includes(subIssueNumber)) {
+                  subIssues.push(subIssueNumber);
+                }
+              }
+            }
+
+            console.log('Sub-issues:', subIssues);
+            core.setOutput('sub_issues', JSON.stringify(subIssues));
           }).catch(error => {
-            console.error(error);
+            console.error('Error fetching sub-issues:', error);
             process.exit(1);
           });
-          EOF
+
+      - name: Update sub-issue sprints
         env:
-          ISSUE_ID: ${{ steps.get-issue-data.outputs.issue-id }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-
-      - name: Update Sub-Issues
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          SPRINT: ${{ steps.get-sprint.outputs.sprint }}
         run: |
-          node <<EOF
-          const { graphql } = require("@octokit/graphql");
+          const { graphql } = require('@octokit/graphql');
+          const subIssues = JSON.parse(process.env.SUB_ISSUES);
+          const sprint = JSON.parse(process.env.SPRINT);
+          const owner = process.env.OWNER;
+          const repo = process.env.REPO;
 
-          const subIssues = process.env.SUB_ISSUES.split(',');
-          const sprintValue = process.env.SPRINT_VALUE;
-          const token = process.env.GITHUB_TOKEN;
-          const projectId = "PVT_kwHOAYT8e84A0x6m";
-          const sprintFieldId = "PVTIF_lAHOAYT8e84A0x6mzgqW4r0";
-
-          const mutation = `
-          mutation($subIssueId: ID!, $sprintFieldId: ID!, $sprintValue: String!) {
-            updateProjectNextItemField(input: {projectId: $projectId, itemId: $subIssueId, fieldId: $sprintFieldId, value: $sprintValue}) {
-              projectNextItem {
-                id
+          async function updateSubIssueSprint(issueNumber, sprint) {
+            // Fetch the project ID from the issue
+            const projectQuery = `
+              query {
+                repository(owner: "${owner}", name: "${repo}") {
+                  issue(number: ${issueNumber}) {
+                    projectItems(first: 100, states: [OPEN]) {
+                      nodes {
+                        project {
+                          id
+                        }
+                      }
+                    }
+                  }
+                }
               }
+            `;
+          
+            const projectResult = await graphql({
+              query: projectQuery,
+              headers: {
+                authorization: `token ${process.env.GITHUB_TOKEN}`,
+              },
+            });
+          
+            const projectId = projectResult.repository.issue.projectItems.nodes[0].project.id;
+            console.log("projectId", projectId)
+
+            // Fetch the content ID of the issue
+            const contentQuery = `
+              query {
+                repository(owner: "${owner}", name: "${repo}") {
+                  issue(number: ${issueNumber}) {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const contentResult = await graphql({
+              query: contentQuery,
+              headers: {
+                authorization: `token ${process.env.GITHUB_TOKEN}`,
+              },
+            });
+
+            const contentId = contentResult.repository.issue.id;
+            console.log("contentId", contentId)
+
+            const mutation = `
+              mutation {
+                addProjectV2ItemById(input: {projectId: "${projectId}" , contentId: "${contentId}"}) {
+                  clientMutationId
+                }
+              }
+            `;
+
+            try {
+              const result = await graphql({
+                query: mutation,
+                headers: {
+                  authorization: `token ${process.env.GITHUB_TOKEN}`,
+                },
+              });
+              console.log(`Updated sprint for issue #${issueNumber}:`, result);
+            } catch (error) {
+              console.error(`Error updating sprint for issue #${issueNumber}:`, error);
             }
           }
-          `;
 
-          for (const subIssueId of subIssues) {
-            graphql(mutation, {
-              subIssueId,
-              sprintFieldId,
-              sprintValue,
-              headers: {
-                authorization: `token ${token}`
-              }
-            }).then(result => {
-              console.log(`Updated sub-issue ${subIssueId}`);
-            }).catch(error => {
-              console.error(`Failed to update sub-issue ${subIssueId}: ${error.message}`);
-            });
+          async function main() {
+            for (const issueNumber of subIssues) {
+              await updateSubIssueSprint(issueNumber, sprint);
+            }
           }
-          EOF
-        env:
-          SUB_ISSUES: ${{ steps.get-sub-issues.outputs.sub-issues }}
-          SPRINT_VALUE: ${{ steps.get-issue-data.outputs.sprint-value }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          main();
