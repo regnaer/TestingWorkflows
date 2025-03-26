@@ -1,243 +1,176 @@
-name: Update Sprint on Sub-issues
+name: Update Sub-Issues Sprint Field
 
 on:
   issue_comment:
     types: [created]
 
 jobs:
-  update_sprint:
-    if: github.event.comment.body == 'update tasks'
+  update-sub-issues:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
-      repository-projects: write
+    if: github.event.comment.body == 'update tasks'
     steps:
-      - name: Checkout code
+      - name: Check out the repository
         uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install @octokit/graphql
 
-      - name: Get issue information and update sub-issues
+      - name: Get Issue Data
+        id: get-issue-data
+        run: |
+          node <<EOF
+          const { graphql } = require("@octokit/graphql");
+
+          const issueNumber = process.env.GITHUB_EVENT.issue.number;
+          const owner = process.env.GITHUB_REPOSITORY_OWNER;
+          const repo = process.env.GITHUB_REPOSITORY.split("/")[1];
+          const token = process.env.GITHUB_TOKEN;
+
+          const query = `
+          query($issueNumber: Int!, $owner: String!, $repo: String!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $issueNumber) {
+                id
+                projectItems(first: 1) {
+                  nodes {
+                    id
+                    fieldValues(first: 10) {
+                      nodes {
+                        projectField {
+                          id
+                          name
+                        }
+                        value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          `;
+
+          graphql(query, {
+            issueNumber,
+            owner,
+            repo,
+            headers: {
+              authorization: `token ${token}`
+            }
+          }).then(result => {
+            const issueId = result.repository.issue.id;
+            const sprintField = result.repository.issue.projectItems.nodes[0].fieldValues.nodes.find(field => field.projectField.name === 'Sprint');
+            const sprintValue = sprintField ? sprintField.value : null;
+
+            console.log(`::set-output name=issue-id::${issueId}`);
+            console.log(`::set-output name=sprint-value::${sprintValue}`);
+          }).catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          EOF
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PROJECT_ID: "PVT_kwHOAYT8e84A0x6m"
-          SPRINT_FIELD_ID: "PVTIF_lAHOAYT8e84A0x6mzgqW4r0"
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_EVENT: ${{ toJson(github.event) }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+
+      - name: Get Sub-Issues
+        id: get-sub-issues
         run: |
-          const { graphql } = require('@octokit/graphql');
+          node <<EOF
+          const { graphql } = require("@octokit/graphql");
 
-          const octokit = graphql.defaults({
+          const issueId = process.env.ISSUE_ID;
+          const owner = process.env.GITHUB_REPOSITORY_OWNER;
+          const repo = process.env.GITHUB_REPOSITORY.split("/")[1];
+          const token = process.env.GITHUB_TOKEN;
+
+          const query = `
+          query($issueId: ID!) {
+            node(id: $issueId) {
+              ... on Issue {
+                timelineItems(itemTypes: [CONNECTED_EVENT], first: 100) {
+                  nodes {
+                    ... on ConnectedEvent {
+                      subject {
+                        ... on Issue {
+                          id
+                          state
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          `;
+
+          graphql(query, {
+            issueId,
             headers: {
-              authorization: `token ${process.env.GITHUB_TOKEN}`,
-            },
+              authorization: `token ${token}`
+            }
+          }).then(result => {
+            const subIssues = result.node.timelineItems.nodes
+              .filter(event => event.subject.state === 'OPEN')
+              .map(event => event.subject.id);
+
+            console.log(`::set-output name=sub-issues::${subIssues.join(',')}`);
+          }).catch(error => {
+            console.error(error);
+            process.exit(1);
           });
+          EOF
+        env:
+          ISSUE_ID: ${{ steps.get-issue-data.outputs.issue-id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
-          async function getIssueInfo(owner, repo, issueNumber) {
-            const query = `
-              query GetIssue($owner: String!, $repo: String!, $issueNumber: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  issue(number: $issueNumber) {
-                    id
-                    title
-                    body
-                    projectItems(first: 10, states: [OPEN, CLOSED]) {
-                      nodes {
-                        id
-                        fieldValueByName(name: "Sprint") {
-                          ... on ProjectV2ItemFieldIterationValue {
-                            iterationId
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
+      - name: Update Sub-Issues
+        run: |
+          node <<EOF
+          const { graphql } = require("@octokit/graphql");
+
+          const subIssues = process.env.SUB_ISSUES.split(',');
+          const sprintValue = process.env.SPRINT_VALUE;
+          const token = process.env.GITHUB_TOKEN;
+          const projectId = "PVT_kwHOAYT8e84A0x6m";
+          const sprintFieldId = "PVTIF_lAHOAYT8e84A0x6mzgqW4r0";
+
+          const mutation = `
+          mutation($subIssueId: ID!, $sprintFieldId: ID!, $sprintValue: String!) {
+            updateProjectNextItemField(input: {projectId: $projectId, itemId: $subIssueId, fieldId: $sprintFieldId, value: $sprintValue}) {
+              projectNextItem {
+                id
               }
-            `;
-
-            try {
-              const result = await octokit({
-                query,
-                owner,
-                repo,
-                issueNumber,
-              });
-              return result.repository.issue;
-            } catch (error) {
-              console.error("Error fetching issue information:", error);
-              throw error;
             }
           }
+          `;
 
-          async function getSubIssues(owner, repo, issueBody) {
-            // Regex to find sub-issues links in the issue body (e.g., "- [ ] #123")
-            const subIssueRegex = /- \[.] #(\d+)/g;
-            let match;
-            const subIssueNumbers = [];
-
-            while ((match = subIssueRegex.exec(issueBody)) !== null) {
-              subIssueNumbers.push(parseInt(match[1], 10));
-            }
-
-            if (subIssueNumbers.length === 0) {
-              console.log("No sub-issues found in the issue body.");
-              return [];
-            }
-
-            console.log("Found sub-issue numbers:", subIssueNumbers);
-
-            // Fetch details for each sub-issue to filter for open ones
-            const subIssues = [];
-            for (const number of subIssueNumbers) {
-              try {
-                const query = `
-                  query GetSubIssue($owner: String!, $repo: String!, $issueNumber: Int!) {
-                    repository(owner: $owner, name: $repo) {
-                      issue(number: $issueNumber) {
-                        id
-                        state
-                      }
-                    }
-                  }
-                `;
-
-                const result = await octokit({
-                  query,
-                  owner,
-                  repo,
-                  issueNumber: number,
-                });
-
-                const issue = result.repository.issue;
-                if (issue && issue.state === "OPEN") {
-                  subIssues.push({ number: number, id: issue.id });
-                }
-              } catch (error) {
-                console.error(`Error fetching sub-issue ${number}:`, error);
+          for (const subIssueId of subIssues) {
+            graphql(mutation, {
+              subIssueId,
+              sprintFieldId,
+              sprintValue,
+              headers: {
+                authorization: `token ${token}`
               }
-            }
-
-            return subIssues;
+            }).then(result => {
+              console.log(`Updated sub-issue ${subIssueId}`);
+            }).catch(error => {
+              console.error(`Failed to update sub-issue ${subIssueId}: ${error.message}`);
+            });
           }
-
-          async function updateSprintField(projectId, itemId, fieldId, iterationId) {
-            const mutation = `
-              mutation UpdateProjectV2ItemFieldValue($input: UpdateProjectV2ItemFieldValueInput!) {
-                updateProjectV2ItemFieldValue(input: $input) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }
-            `;
-
-            try {
-              const result = await octokit({
-                query: mutation,
-                input: {
-                  projectId,
-                  itemId,
-                  fieldId,
-                  value: {
-                    iterationId,
-                  },
-                },
-              });
-              console.log(`Successfully updated sprint field for item ${itemId}`);
-              return result;
-            } catch (error) {
-              console.error(`Error updating sprint field for item ${itemId}:`, error);
-              throw error;
-            }
-          }
-
-          async function main() {
-            try {
-              const owner = process.env.OWNER;
-              const repo = process.env.REPO;
-              const issueNumber = parseInt(process.env.ISSUE_NUMBER, 10);
-              const projectId = process.env.PROJECT_ID;
-              const sprintFieldId = process.env.SPRINT_FIELD_ID;
-
-              // 1. Get the issue information
-              const issue = await getIssueInfo(owner, repo, issueNumber);
-
-              if (!issue) {
-                console.log("Issue not found.");
-                return;
-              }
-
-              let sprintIterationId = null;
-              if (issue.projectItems.nodes && issue.projectItems.nodes.length > 0) {
-                const projectItem = issue.projectItems.nodes[0]; // Assuming only one project item
-                if (projectItem.fieldValueByName && projectItem.fieldValueByName.iterationId) {
-                  sprintIterationId = projectItem.fieldValueByName.iterationId;
-                }
-              }
-
-              if (!sprintIterationId) {
-                console.log("Parent issue is not assigned to a sprint.");
-                return;
-              }
-
-              // 2. Get the sub-issues
-              const subIssues = await getSubIssues(owner, repo, issue.body);
-
-              if (subIssues.length === 0) {
-                console.log("No open sub-issues found.");
-                return;
-              }
-
-              // 3. Update the sprint field for each sub-issue
-              for (const subIssue of subIssues) {
-                try {
-                  // Find the project item ID associated with the sub-issue
-                  const subIssueProjectItemsQuery = `
-                    query GetProjectItems($owner: String!, $repo: String!, $issueNumber: Int!) {
-                      repository(owner: $owner, name: $repo) {
-                        issue(number: $issueNumber) {
-                          projectItems(first: 10, states: [OPEN, CLOSED]) {
-                            nodes {
-                              id
-                            }
-                          }
-                        }
-                      }
-                    }
-                  `;
-
-                  const subIssueProjectItemsResult = await octokit({
-                    query: subIssueProjectItemsQuery,
-                    owner: owner,
-                    repo: repo,
-                    issueNumber: subIssue.number,
-                  });
-
-                  if (subIssueProjectItemsResult.repository.issue.projectItems.nodes && subIssueProjectItemsResult.repository.issue.projectItems.nodes.length > 0) {
-                    const subIssueProjectItemId = subIssueProjectItemsResult.repository.issue.projectItems.nodes[0].id;
-                    await updateSprintField(projectId, subIssueProjectItemId, sprintFieldId, sprintIterationId);
-                  } else {
-                    console.log(`Sub-issue ${subIssue.number} is not associated with the project.`);
-                  }
-                } catch (error) {
-                  console.error(`Error updating sprint for sub-issue ${subIssue.number}:`, error);
-                }
-              }
-
-              console.log("Successfully updated sprint for all sub-issues.");
-            } catch (error) {
-              console.error("An error occurred:", error);
-              process.exit(1); // Exit with an error code
-            }
-          }
-
-          main();
+          EOF
+        env:
+          SUB_ISSUES: ${{ steps.get-sub-issues.outputs.sub-issues }}
+          SPRINT_VALUE: ${{ steps.get-issue-data.outputs.sprint-value }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
