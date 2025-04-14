@@ -53,6 +53,7 @@ gitGraph
     tag "v1.0.0"
 
     %% --- Feature B is validated in QC (on integ/1.1), now merge original feature to main ---
+    checkout main  %% Ensure we are on main before merge
     merge feature/B-for-1.1 id:"Feat B merged to main"
 
     %% --- Hotfix for v1.0.0 ---
@@ -64,6 +65,7 @@ gitGraph
     %% Merge hotfix back to main
     checkout main
     merge hotfix/v1.0.1-bugfix id:"Hotfix merged to main"
+    checkout main  %% Explicitly checkout main again before tagging
     tag "v1.0.1"
 
     %% Cherry-pick hotfix onto active integration branch for 1.1
