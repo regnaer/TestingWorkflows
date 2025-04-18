@@ -1,3 +1,7 @@
+# Workflow to generate a CSV report of issues in a GitHub Project (V2)
+# Current User: regnaer
+# Generated Timestamp (UTC): 2025-04-18 02:38:34
+
 name: Generate Project Issues Report
 
 on:
@@ -10,38 +14,37 @@ on:
       project_number:
         description: 'The number of the ProjectV2 (e.g., 5)'
         required: true
-        type: number
+        type: number # Input type is number
 
 jobs:
   generate_report:
     runs-on: ubuntu-latest
     permissions:
-      # Required to read project and issue data via the API
-      issues: read
-      # Required if checking out code that includes the script (not needed here as script is inline)
-      # contents: read
+      issues: read     # Needed for reading issue details via API
+      contents: read   # Needed for actions/checkout to fetch repository code
     steps:
-      - name: Checkout repository # Good practice, even if script is inline for now
+      - name: Checkout repository
         uses: actions/checkout@v4
+        # If the repo is private AND the above permission doesn't work (e.g., org settings restrict token),
+        # you might need a PAT with 'repo' scope stored as a secret (e.g., CHECKOUT_PAT):
+        # with:
+        #   token: ${{ secrets.CHECKOUT_PAT }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Specify a Python version
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: python -m pip install requests # Install required library
+        run: python -m pip install requests
 
       - name: Generate Project Report Script
         id: generate_script
         env:
           OWNER_LOGIN: ${{ github.event.inputs.owner_login }}
-          PROJECT_NUMBER: ${{ github.event.inputs.project_number }}
-          # Use the default GITHUB_TOKEN. If it lacks permissions (e.g., private org project),
-          # create a PAT with 'repo', 'read:project', 'read:org' scopes, add it as a secret
-          # (e.g., PROJECT_REPORT_PAT), and uncomment the line below, commenting out the default.
+          PROJECT_NUMBER: ${{ format('{0}', github.event.inputs.project_number) }} # Ensure value is treated as string for env var
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }}
+          # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Use PAT for API calls if needed
         run: |
           cat << 'EOF' > generate_report.py
           # Python script to fetch GitHub Project issues and generate a CSV report
@@ -74,14 +77,10 @@ jobs:
                sys.exit(1)
           if not GITHUB_TOKEN:
               print("Error: GITHUB_TOKEN environment variable not found. Ensure it's passed correctly.", file=sys.stderr)
-              # Note: GitHub Actions usually provides secrets.GITHUB_TOKEN automatically if permissions are set.
-              # If using a PAT, ensure the secret name matches the env var assignment in the workflow.
               sys.exit(1)
 
 
           # --- Field Definitions ---
-          # Keys (lowercase) are internal references.
-          # Values (string) must match the exact case-sensitive ProjectV2 custom field names.
           CUSTOM_FIELD_NAMES = {
               "sprint": "Sprint",
               "team": "Team",
@@ -93,7 +92,6 @@ jobs:
               "blocked": "Blocked?"
           }
 
-          # Define the exact headers and their order for the CSV output
           CSV_HEADERS = [
               "Title", "Issue Number", "Type", "Parent Issue Number", "Sprint",
               "Milestone", "Created_at", "Closed_at", "Team", "Priority",
@@ -106,62 +104,53 @@ jobs:
               headers = {
                   "Authorization": f"bearer {GITHUB_TOKEN}",
                   "Content-Type": "application/json",
-                  "GraphQL-Features": "issue_types" # Enable feature flag for issueType field
+                  "GraphQL-Features": "issue_types"
               }
               payload = {"query": query}
               if variables:
                   payload["variables"] = variables
 
               try:
-                  response = requests.post(API_URL, headers=headers, json=payload, timeout=30) # Added timeout
-                  response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+                  response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+                  response.raise_for_status()
               except requests.exceptions.Timeout:
                   print("Error: GraphQL request timed out.", file=sys.stderr)
                   sys.exit(1)
               except requests.exceptions.RequestException as e:
                   print(f"Error: Network or Request error during GraphQL query: {e}", file=sys.stderr)
-                  # Attempt to get more detail from response if available
                   if e.response is not None:
                        print(f"Response Status: {e.response.status_code}", file=sys.stderr)
                        print(f"Response Text: {e.response.text[:500]}...", file=sys.stderr)
                   sys.exit(1)
 
-
               result = response.json()
 
-              # Check for GraphQL-specific errors returned in the JSON body
               if "errors" in result:
                   print("Error: GraphQL API returned errors:", file=sys.stderr)
                   print(json.dumps(result["errors"], indent=2), file=sys.stderr)
-                  # Provide specific hints based on common error messages/types
                   error_message = result['errors'][0].get('message', 'Unknown GraphQL error')
                   error_type = result['errors'][0].get('type')
                   if "Could not resolve to ProjectV2" in error_message or error_type == "NOT_FOUND":
-                      print("Hint: Double-check the OWNER_LOGIN and PROJECT_NUMBER. Ensure the token has 'read:project' scope for the owner.", file=sys.stderr)
+                      print("Hint: Double-check OWNER_LOGIN/PROJECT_NUMBER & token permission for project.", file=sys.stderr)
                   elif "Could not resolve to an Organization" in error_message or "Could not resolve to a User" in error_message:
-                      print(f"Hint: Ensure '{OWNER_LOGIN}' is the correct login for the project owner (organization or user). Check case-sensitivity.", file=sys.stderr)
-                  elif "FIELD_ACCESS_DENIED" in str(result["errors"]): # Check string representation too
-                      print("Hint: The token might be missing permissions (e.g., 'read:project', 'read:org', 'repo') to read specific project fields, issues, or repositories.", file=sys.stderr)
+                      print(f"Hint: Ensure '{OWNER_LOGIN}' is correct login (case-sensitive).", file=sys.stderr)
+                  elif "FIELD_ACCESS_DENIED" in str(result["errors"]):
+                      print("Hint: Token might be missing permissions (e.g., implicit repo/org access, or PAT needs 'read:project', 'read:org', 'repo').", file=sys.stderr)
                   elif "API rate limit exceeded" in error_message:
-                      print("Hint: The workflow hit the GitHub API rate limit. Try again later or consider using a PAT with higher limits if applicable.", file=sys.stderr)
-                  # Exit after printing errors and hints
+                      print("Hint: Hit API rate limit. Try again later.", file=sys.stderr)
                   sys.exit(f"GraphQL query failed: {error_message}")
 
-              return result.get("data", {}) # Return the data part of the response
+              return result.get("data", {})
 
           def get_project_node_id(owner_login, project_number):
               """Gets the GraphQL Node ID for a ProjectV2, checking both org and user."""
               project_id = None
-              project_title = None # Store title for confirmation message
+              project_title = None
 
-              # --- Try finding project under Organization owner ---
               query_org = """
               query GetOrgProjectID($owner: String!, $number: Int!) {
                 organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    title # Get title for user feedback
-                  }
+                  projectV2(number: $number) { id title }
                 }
               }
               """
@@ -169,34 +158,27 @@ jobs:
               print(f"Attempting to find project #{project_number} under organization '{owner_login}'...")
               try:
                   data_org = run_graphql_query(query_org, variables)
-                  # Navigate safely through potentially missing keys
                   project_data = data_org.get("organization", {}).get("projectV2") if data_org.get("organization") else None
                   if project_data and project_data.get("id"):
                       project_id = project_data.get("id")
                       project_title = project_data.get("title", "N/A")
                       print(f"Success: Found Organization Project '{project_title}' (ID: {project_id})")
-              except SystemExit: # Catch exit from run_graphql_query on error
+              except SystemExit:
                    print("Failed to query organization project.", file=sys.stderr)
-                   # Don't re-raise, allow attempt for user project
-              except Exception as e: # Catch unexpected errors during this specific query attempt
+              except Exception as e:
                    print(f"Warning: Unexpected error during organization project check: {e}", file=sys.stderr)
 
-              # --- If not found in org, try finding under User owner ---
               if not project_id:
                   print(f"Project not found under organization, checking user '{owner_login}'...")
                   query_user = """
                   query GetUserProjectID($owner: String!, $number: Int!) {
                     user(login: $owner) {
-                      projectV2(number: $number) {
-                        id
-                        title # Get title for user feedback
-                      }
+                      projectV2(number: $number) { id title }
                     }
                   }
                   """
                   try:
                       data_user = run_graphql_query(query_user, variables)
-                      # Navigate safely
                       project_data = data_user.get("user", {}).get("projectV2") if data_user.get("user") else None
                       if project_data and project_data.get("id"):
                           project_id = project_data.get("id")
@@ -204,115 +186,61 @@ jobs:
                           print(f"Success: Found User Project '{project_title}' (ID: {project_id})")
                   except SystemExit:
                        print("Failed to query user project.", file=sys.stderr)
-                       # Don't re-raise, allow final check below
                   except Exception as e:
                        print(f"Warning: Unexpected error during user project check: {e}", file=sys.stderr)
 
-              # --- Final Check ---
               if not project_id:
-                  print(f"\nError: ProjectV2 number {project_number} was NOT found for owner '{owner_login}' (checked both organization and user types).", file=sys.stderr)
-                  print("Hints: Please verify the owner login (case-sensitive), project number, and that the GitHub Token used has 'read:project' permission for this specific project.", file=sys.stderr)
-                  sys.exit(1) # Exit if project ID could not be determined
+                  print(f"\nError: ProjectV2 number {project_number} was NOT found for owner '{owner_login}'.", file=sys.stderr)
+                  print("Hints: Verify owner login (case-sensitive), project number, and token permissions/access.", file=sys.stderr)
+                  sys.exit(1)
 
               return project_id
 
           def format_iso_date(date_string):
               """Formats ISO 8601 date string to 'YYYY-MM-DD HH:MM:SS' UTC or returns empty string."""
-              if not date_string:
-                  return ""
+              if not date_string: return ""
               try:
-                  # Parse the ISO string, assuming UTC if 'Z' is present or no offset is specified
                   if date_string.endswith('Z'):
                       dt = datetime.fromisoformat(date_string.replace('Z', '+00:00'))
                   else:
-                      # Attempt direct parsing, hoping it includes offset or is naive UTC
                       dt = datetime.fromisoformat(date_string)
-                      # If it's naive, assume UTC (GitHub usually provides UTC)
                       if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
                            dt = dt.replace(tzinfo=timezone.utc)
-
-                  # Convert to UTC just to be sure, then format
                   dt_utc = dt.astimezone(timezone.utc)
                   return dt_utc.strftime('%Y-%m-%d %H:%M:%S')
               except ValueError:
                   print(f"Warning: Could not parse date '{date_string}'. Returning as is.", file=sys.stderr)
-                  return date_string # Return original string if parsing fails
+                  return date_string
 
           # --- Main GraphQL Query for Project Items ---
-          # Fetches issues, their standard fields, and custom field values.
           PROJECT_ITEMS_QUERY = """
           query GetProjectItems($projectId: ID!, $firstItems: Int!, $afterItemCursor: String, $firstFields: Int!) {
             node(id: $projectId) {
               ... on ProjectV2 {
                 items(first: $firstItems, after: $afterItemCursor, orderBy: {field: POSITION, direction: ASC}) {
                   totalCount
-                  pageInfo {
-                    endCursor
-                    hasNextPage
-                  }
+                  pageInfo { endCursor hasNextPage }
                   nodes {
-                    id # Project item ID
-                    createdAt # Project item creation timestamp
-                    # --- Content (Issue or PR) ---
+                    id createdAt
                     content {
-                      __typename # Identifies if it's an Issue or PullRequest
+                      __typename
                       ... on Issue {
-                        id # Issue Node ID
-                        number # Issue number
-                        title
-                        url
-                        state # OPEN or CLOSED
-                        createdAt # Issue creation timestamp
-                        closedAt # Issue closing timestamp (null if open)
-                        milestone { title } # Associated milestone title
-                        labels(first: 20) { nodes { name } } # Issue labels (up to 20)
-                        issueType { name } # Custom issue type name (requires feature flag)
-                        # Note: Parent Issue Number is not a standard direct field.
-                        # Requires custom logic (e.g., parsing body, specific label/field).
+                        id number title url state createdAt closedAt
+                        milestone { title }
+                        labels(first: 20) { nodes { name } }
+                        issueType { name }
                       }
-                      ... on PullRequest {
-                        # Include basic PR info if needed, though script filters for Issues
-                        id
-                        number
-                        title
-                        url
-                      }
+                      ... on PullRequest { id number title url }
                     }
-                    # --- Custom Field Values for this Project Item ---
-                    fieldValues(first: $firstFields) { # Fetch up to $firstFields fields per item
+                    fieldValues(first: $firstFields) {
                       nodes {
-                        __typename # Identifies the type of field value
-                        # --- Specific Field Type Fragments ---
-                        ... on ProjectV2ItemFieldTextValue {
-                          text
-                          field { ... on ProjectV2FieldCommon { name } }
-                        }
-                        ... on ProjectV2ItemFieldSingleSelectValue {
-                          name # Selected option's text
-                          field { ... on ProjectV2FieldCommon { name } }
-                        }
-                        ... on ProjectV2ItemFieldDateValue {
-                          date # YYYY-MM-DD format
-                          field { ... on ProjectV2FieldCommon { name } }
-                        }
-                        ... on ProjectV2ItemFieldIterationValue {
-                          title # Iteration name (e.g., "Sprint 5 - Feb")
-                          # startDate # Available if needed
-                          # duration # Available if needed
-                          field { ... on ProjectV2FieldCommon { name } } # Field is ProjectV2IterationField
-                        }
-                         ... on ProjectV2ItemFieldNumberValue {
-                          number # The numeric value as a float/string
-                          field { ... on ProjectV2FieldCommon { name } }
-                        }
-                        # Add fragments for other types (e.g., People, Labels) if used
-                        # --- Generic Fragment to get Field Name ---
-                        # Essential fallback to identify the field even if its type isn't listed above
-                        ... on ProjectV2ItemFieldValueCommon {
-                            field {
-                                ... on ProjectV2FieldCommon { name }
-                            }
-                        }
+                        __typename
+                        ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+                        ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+                        ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
+                        ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } }
+                        ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
+                        ... on ProjectV2ItemFieldValueCommon { field { ... on ProjectV2FieldCommon { name } } }
                       }
                     }
                   }
@@ -320,26 +248,22 @@ jobs:
               }
             }
           }
-          # Reusable fragment to get the field's name efficiently
           fragment ProjectV2FieldCommon on ProjectV2Field { name }
           """
 
           # --- Main Execution Logic ---
           print(f"\nStarting report generation for project {PROJECT_NUMBER} owned by {OWNER_LOGIN}...")
+          project_node_id = get_project_node_id(OWNER_LOGIN, PROJECT_NUMBER)
 
-          # 1. Get Project Node ID
-          project_node_id = get_project_node_id(OWNER_LOGIN, PROJECT_NUMBER) # Exits if fails
-
-          # 2. Fetch Project Items (Handles Pagination)
           all_issues_data = []
-          found_custom_fields = set() # Track which expected custom fields were actually encountered
+          found_custom_fields = set()
           expected_custom_field_names = set(CUSTOM_FIELD_NAMES.values())
 
           has_next_page = True
-          current_cursor = None # Start with no cursor for the first page
+          current_cursor = None
           print("\nFetching project items...")
           item_count = 0
-          total_items = 0 # Will be updated on the first successful page fetch
+          total_items = 0
 
           while has_next_page:
               print(f"  Fetching page starting with cursor: {current_cursor if current_cursor else 'None'}")
@@ -347,156 +271,97 @@ jobs:
                   "projectId": project_node_id,
                   "firstItems": PAGE_SIZE,
                   "afterItemCursor": current_cursor,
-                  "firstFields": 50 # Max number of *custom fields* per item to fetch in one go
+                  "firstFields": 50
               }
               try:
-                  # Execute the main GraphQL query for items
-                  data = run_graphql_query(PROJECT_ITEMS_QUERY, variables) # Exits on GraphQL/network error
+                  data = run_graphql_query(PROJECT_ITEMS_QUERY, variables)
               except SystemExit:
-                   # If run_graphql_query exited, stop pagination
                    print("Exiting due to error during item fetch.", file=sys.stderr)
-                   has_next_page = False # Ensure loop terminates
-                   break # Exit while loop
+                   has_next_page = False; break
               except Exception as e:
                    print(f"\nCritical Error during GraphQL query execution: {e}", file=sys.stderr)
-                   print("This might be due to intermittent network issues or unexpected API problems.", file=sys.stderr)
-                   sys.exit(1) # Exit script on unexpected error
+                   sys.exit(1)
 
-
-              # --- Process Response ---
               project_data = data.get("node", {})
               if not project_data:
-                   # Should not happen if project_node_id was valid, but check anyway
-                   print(f"Warning: Received null data for project node ID {project_node_id} during item fetch. Project might have become inaccessible.", file=sys.stderr)
-                   break # Stop processing
+                   print(f"Warning: Received null data for project node ID {project_node_id} during item fetch.", file=sys.stderr)
+                   break
 
               items_data = project_data.get("items", {})
               nodes = items_data.get("nodes", [])
               page_info = items_data.get("pageInfo", {})
-              current_total = items_data.get("totalCount", 0) # Get total count from this page
+              current_total = items_data.get("totalCount", 0)
 
-              # Update total_items only on the first page or if it increases (unlikely but safe)
               if current_cursor is None or current_total > total_items:
                    total_items = current_total
-                   if current_cursor is None: # Only print total on first fetch
-                       print(f"  Project reports {total_items} total items.")
+                   if current_cursor is None: print(f"  Project reports {total_items} total items.")
 
               if not nodes:
-                  if current_cursor is None and total_items == 0:
-                      print("  Project has no items.")
-                  elif total_items > item_count:
-                      # If we expected more items but got an empty page, log warning and stop
-                      print(f"Warning: Received empty item list unexpectedly (processed {item_count}/{total_items}). Stopping pagination.", file=sys.stderr)
-                  # If nodes is empty and item_count == total_items, we're just done.
-                  break # Exit loop if no nodes are returned
+                  if current_cursor is None and total_items == 0: print("  Project has no items.")
+                  elif total_items > item_count: print(f"Warning: Received empty item list unexpectedly (processed {item_count}/{total_items}). Stopping.", file=sys.stderr)
+                  break
 
-
-              # --- Process Items on Current Page ---
               page_item_count = 0
               for item in nodes:
-                  item_count += 1
-                  page_item_count += 1
+                  item_count += 1; page_item_count += 1
                   content = item.get("content")
+                  if not content or content.get("__typename") != "Issue": continue
 
-                  # Filter for Issues Only
-                  if not content or content.get("__typename") != "Issue":
-                      # print(f"  Skipping item {item_count} (not an Issue: {content.get('__typename', 'No Content')})")
-                      continue # Skip if it's not an issue or has no content node
-
-                  # Initialize row data with default empty values for all expected columns
                   issue_details = {header: "" for header in CSV_HEADERS}
-
-                  # Populate Standard Issue Fields
                   issue_details["Title"] = content.get("title", "")
                   issue_details["Issue Number"] = content.get("number", "")
-                  issue_details["Type"] = content.get("issueType", {}).get("name", "") # Handles if issueType is null
+                  issue_details["Type"] = content.get("issueType", {}).get("name", "")
                   issue_details["Milestone"] = content.get("milestone", {}).get("title", "") if content.get("milestone") else ""
                   issue_details["Created_at"] = format_iso_date(content.get("createdAt", ""))
                   issue_details["Closed_at"] = format_iso_date(content.get("closedAt", ""))
-                  # Combine labels into a comma-separated string
                   labels_list = [label.get("name") for label in content.get("labels", {}).get("nodes", []) if label.get("name")]
                   issue_details["Labels"] = ", ".join(labels_list)
-                  # Parent Issue Number remains blank - requires custom logic
 
-                  # Populate Custom Field Values
                   field_values = item.get("fieldValues", {}).get("nodes", [])
                   for field_value in field_values:
-                      field_node = field_value.get("field", {})
-                      field_name = field_node.get("name") if field_node else None
-                      if not field_name: continue # Skip if field name is missing
+                      field_node = field_value.get("field", {}); field_name = field_node.get("name") if field_node else None
+                      if not field_name: continue
+                      if field_name in expected_custom_field_names: found_custom_fields.add(field_name)
 
-                      # Track if this is one of the custom fields we defined/expect
-                      if field_name in expected_custom_field_names:
-                          found_custom_fields.add(field_name)
+                      if field_name == CUSTOM_FIELD_NAMES.get("sprint"): issue_details["Sprint"] = field_value.get("title", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("team"): issue_details["Team"] = field_value.get("name", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("priority"): issue_details["Priority"] = field_value.get("name", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("severity"): issue_details["Severity"] = field_value.get("name", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("effort"): issue_details["Effort"] = field_value.get("number", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("status"): issue_details["Status"] = field_value.get("name", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("t_shirt_size"): issue_details["T-Shirt Size"] = field_value.get("name", "")
+                      elif field_name == CUSTOM_FIELD_NAMES.get("blocked"): issue_details["Blocked?"] = field_value.get("name", "")
 
-                      # Map extracted value based on field name and known type mapping
-                      # Use .get() on CUSTOM_FIELD_NAMES for safety, though keys should exist
-                      if field_name == CUSTOM_FIELD_NAMES.get("sprint"):
-                          issue_details["Sprint"] = field_value.get("title", "") # Iteration uses 'title'
-                      elif field_name == CUSTOM_FIELD_NAMES.get("team"):
-                          issue_details["Team"] = field_value.get("name", "") # SingleSelect uses 'name'
-                      elif field_name == CUSTOM_FIELD_NAMES.get("priority"):
-                          issue_details["Priority"] = field_value.get("name", "")
-                      elif field_name == CUSTOM_FIELD_NAMES.get("severity"):
-                          issue_details["Severity"] = field_value.get("name", "")
-                      elif field_name == CUSTOM_FIELD_NAMES.get("effort"):
-                          issue_details["Effort"] = field_value.get("number", "") # Number uses 'number'
-                      elif field_name == CUSTOM_FIELD_NAMES.get("status"):
-                          issue_details["Status"] = field_value.get("name", "")
-                      elif field_name == CUSTOM_FIELD_NAMES.get("t_shirt_size"):
-                          issue_details["T-Shirt Size"] = field_value.get("name", "")
-                      elif field_name == CUSTOM_FIELD_NAMES.get("blocked"):
-                          issue_details["Blocked?"] = field_value.get("name", "")
-                      # Add more 'elif' blocks here for other custom fields if needed
-
-                  # Add the processed issue data to our list
                   all_issues_data.append(issue_details)
-              # --- End Item Processing Loop for Page ---
 
               print(f"  Processed {page_item_count} items from this page ({item_count}/{total_items} total processed).")
 
-              # --- Pagination Logic ---
               has_next_page = page_info.get("hasNextPage", False)
               current_cursor = page_info.get("endCursor") if has_next_page else None
+              if not has_next_page: print(f"\nFinished fetching all items ({total_items} total)."); break
 
-              if not has_next_page:
-                  print(f"\nFinished fetching all items ({total_items} total).")
-                  break # Exit the while loop
-          # --- End Pagination While Loop ---
-
-
-          # 3. Check for Missing Expected Custom Fields and Warn
           missing_fields = expected_custom_field_names - found_custom_fields
           if missing_fields:
               print("\n--- Warnings ---", file=sys.stderr)
-              print("The following expected custom fields (defined in the script) were NOT found in any items retrieved from this project:", file=sys.stderr)
-              for field in sorted(list(missing_fields)):
-                  print(f"  - '{field}'", file=sys.stderr)
-              print("Corresponding columns in the CSV report will likely be empty.", file=sys.stderr)
-              print("Verify that these fields exist in the project settings and that their names match exactly (case-sensitive) in the script's CUSTOM_FIELD_NAMES dictionary.", file=sys.stderr)
+              print("The following expected custom fields were NOT found:", file=sys.stderr)
+              for field in sorted(list(missing_fields)): print(f"  - '{field}'", file=sys.stderr)
+              print("Corresponding CSV columns will likely be empty.", file=sys.stderr)
+              print("Verify field names (case-sensitive) in project settings & script's CUSTOM_FIELD_NAMES.", file=sys.stderr)
               print("---------------\n")
 
-
-          # 4. Write Data to CSV
           print(f"\nPreparing to write {len(all_issues_data)} issues to {CSV_FILENAME}...")
-          if not all_issues_data and total_items > 0:
-               # This case indicates issues occurred during processing or filtering
-               print("Warning: No issue data was collected, but the project reported items. The CSV will only contain headers.", file=sys.stderr)
-          elif not all_issues_data:
-               print("No issue data collected (project might be empty or contain no issues). CSV will only contain headers.")
+          if not all_issues_data and total_items > 0: print("Warning: No issue data collected despite project items reported. CSV has headers only.", file=sys.stderr)
+          elif not all_issues_data: print("No issue data collected. CSV has headers only.")
 
           try:
               with open(CSV_FILENAME, 'w', newline='', encoding='utf-8') as csvfile:
-                  # Use the predefined CSV_HEADERS list for consistency
-                  # extrasaction='ignore' prevents errors if issue_details somehow got extra keys
                   writer = csv.DictWriter(csvfile, fieldnames=CSV_HEADERS, extrasaction='ignore')
                   writer.writeheader()
-                  if all_issues_data: # Only write rows if data exists
-                      writer.writerows(all_issues_data)
+                  if all_issues_data: writer.writerows(all_issues_data)
               print(f"Successfully wrote data to {CSV_FILENAME}")
           except IOError as e:
               print(f"\nError: Failed to write CSV file '{CSV_FILENAME}': {e}", file=sys.stderr)
-              sys.exit(1) # Exit if file writing fails
+              sys.exit(1)
 
           print("\nScript finished successfully.")
 
@@ -504,12 +369,13 @@ jobs:
           echo "Python script 'generate_report.py' created."
 
       - name: Run Report Generation Script
-        run: python generate_report.py # Execute the generated script
+        run: python generate_report.py
 
       - name: Upload Report Artifact
         uses: actions/upload-artifact@v4
         with:
+          # Corrected line using format() function
           name: ${{ format('project-issues-report-{0}-{1}', github.event.inputs.owner_login, github.event.inputs.project_number) }} # More specific artifact name
-          path: project_issues_report.csv # Path to the generated CSV file
-          if-no-files-found: warn # Use 'warn' so an empty (headers-only) CSV doesn't fail the step
-          retention-days: 7 # Optional: Keep artifact for 7 days
+          path: project_issues_report.csv
+          if-no-files-found: warn
+          retention-days: 7
