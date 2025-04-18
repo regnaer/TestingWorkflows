@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       # Required to read project and issue data via the API
-      projects: read
       issues: read
       # Required if checking out code that includes the script (not needed here as script is inline)
       # contents: read
