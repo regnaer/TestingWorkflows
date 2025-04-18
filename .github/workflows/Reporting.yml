@@ -15,32 +15,21 @@ on:
 jobs:
   generate_report:
     runs-on: ubuntu-latest
-    # Permissions requested for the default GITHUB_TOKEN
     permissions:
-      issues: read     # Needed for reading issue details via API
-      contents: read   # Needed for actions/checkout
-      # read:project scope cannot be requested here, it must be granted via
-      # Org/Repo Settings (Actions > General > Workflow permissions) or by using a PAT.
-    # Define environment variables at the JOB level
+      issues: read
+      contents: read
     env:
-      # Use the organization login input for the owner
       OWNER_LOGIN: ${{ github.event.inputs.org_login }}
       PROJECT_NUMBER: ${{ format('{0}', github.event.inputs.project_number) }}
-
       # --- Authentication: Choose ONE ---
-      # Option 1 (Default): Use the built-in token. Requires Org/Repo settings to grant it project read access.
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Option 2 (Fallback): Use a PAT stored in secrets. PAT needs 'read:project' & 'repo' scopes.
-      # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Uncomment this line if Option 1 fails due to project permissions
+      # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Use PAT if default token fails
 
     steps:
       - name: Checkout repository code from Organization Repo
         uses: actions/checkout@v4
-        # Checkout uses the default GITHUB_TOKEN granted by the permissions block by default.
-        # If using a PAT for API calls (Option 2 above) AND checkout fails (e.g., private repo),
-        # you might need to explicitly pass the PAT here too. Ensure PAT has 'repo' scope.
         # with:
-        #   token: ${{ secrets.PROJECT_REPORT_PAT }}
+        #   token: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Use if PAT is needed for checkout
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,11 +41,9 @@ jobs:
 
       - name: Generate Project Report Script
         id: generate_script
-        # Script generation uses the job-level env vars
         run: |
           cat << 'EOF' > generate_report.py
           # Python script to fetch GitHub Project issues and generate a CSV report
-          # Now expects OWNER_LOGIN to be an Organization Login.
           import os
           import sys
           import requests
@@ -65,9 +52,9 @@ jobs:
           from datetime import datetime, timezone
 
           # --- Configuration ---
-          OWNER_LOGIN = os.environ.get("OWNER_LOGIN") # Org Login from workflow input
+          OWNER_LOGIN = os.environ.get("OWNER_LOGIN")
           PROJECT_NUMBER_STR = os.environ.get("PROJECT_NUMBER")
-          GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") # Default token or PAT from workflow env
+          GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
           API_URL = "https://api.github.com/graphql"
           CSV_FILENAME = "project_issues_report.csv"
           PAGE_SIZE = 100
@@ -79,7 +66,7 @@ jobs:
           except ValueError: print(f"Error: Invalid 'PROJECT_NUMBER' env var: '{PROJECT_NUMBER_STR}'.", file=sys.stderr); sys.exit(1)
           if not GITHUB_TOKEN: print("Error: GITHUB_TOKEN env var not found.", file=sys.stderr); sys.exit(1)
 
-          # --- Field Definitions --- (Same as before)
+          # --- Field Definitions ---
           CUSTOM_FIELD_NAMES = {
               "sprint": "Sprint", "team": "Team", "priority": "Priority", "severity": "Severity",
               "effort": "Effort", "status": "Status", "t_shirt_size": "T-Shirt Size", "blocked": "Blocked?"
@@ -90,7 +77,7 @@ jobs:
               "Status", "Labels", "T-Shirt Size", "Blocked?"
           ]
 
-          # --- Helper Functions --- (Same as before)
+          # --- Helper Functions ---
           def run_graphql_query(query, variables=None):
               headers = { "Authorization": f"bearer {GITHUB_TOKEN}", "Content-Type": "application/json", "GraphQL-Features": "issue_types" }
               payload = {"query": query}
@@ -107,7 +94,6 @@ jobs:
               if "errors" in result:
                   print("Error: GraphQL API returned errors:", file=sys.stderr); print(json.dumps(result["errors"], indent=2), file=sys.stderr)
                   error_message = result['errors'][0].get('message', 'Unknown GraphQL error'); error_type = result['errors'][0].get('type')
-                  # Add more specific hints based on org context
                   if "Could not resolve to ProjectV2" in error_message or error_type == "NOT_FOUND": print(f"Hint: Check ORG_LOGIN ('{OWNER_LOGIN}') / PROJECT_NUMBER ({PROJECT_NUMBER}). Ensure token has project access.", file=sys.stderr)
                   elif "Could not resolve to an Organization" in error_message: print(f"Hint: Ensure '{OWNER_LOGIN}' is the correct org login (case-sensitive).", file=sys.stderr)
                   elif "Could not resolve to a User" in error_message: print(f"Hint: '{OWNER_LOGIN}' was treated as a user, expected org.", file=sys.stderr)
@@ -116,10 +102,8 @@ jobs:
                   sys.exit(f"GraphQL query failed: {error_message}")
               return result.get("data", {})
 
-          # --- get_project_node_id --- (Logic remains valid, org query is now primary)
           def get_project_node_id(owner_login, project_number):
               project_id = None; project_title = None
-              # --- Try Org Project --- (This is now the expected path)
               query_org = "query GetOrgProjID($owner: String!, $number: Int!) { organization(login: $owner){ projectV2(number: $number){ id title } } }"
               variables = {"owner": owner_login, "number": project_number}
               print(f"Attempting to find project #{project_number} under organization '{owner_login}'...")
@@ -129,13 +113,9 @@ jobs:
                   if project_data and project_data.get("id"):
                       project_id = project_data.get("id"); project_title = project_data.get("title", "N/A")
                       print(f"Success: Found Organization Project '{project_title}' (ID: {project_id})")
-                  elif data_org.get("organization") is None:
-                      # This case happens if the login isn't actually an org
-                      print(f"Warning: '{owner_login}' could not be resolved as an Organization.", file=sys.stderr)
-              except SystemExit: print("-> Failed querying organization project.", file=sys.stderr) # Error handled by run_graphql_query
+                  elif data_org.get("organization") is None: print(f"Warning: '{owner_login}' could not be resolved as an Organization.", file=sys.stderr)
+              except SystemExit: print("-> Failed querying organization project.", file=sys.stderr)
               except Exception as e: print(f"Warning: Unexpected error during org project check: {e}", file=sys.stderr)
-
-              # --- Try User Project --- (Fallback, will likely not be reached if org_login is valid)
               if not project_id:
                   print(f"Organization project not found, checking if '{owner_login}' is a user with project #{project_number}...")
                   query_user = "query GetUserProjID($owner: String!, $number: Int!) { user(login: $owner){ projectV2(number: $number){ id title } } }"
@@ -147,15 +127,12 @@ jobs:
                           print(f"Success: Found User Project '{project_title}' (ID: {project_id})")
                   except SystemExit: print("-> Failed querying user project.", file=sys.stderr)
                   except Exception as e: print(f"Warning: Unexpected error during user project check: {e}", file=sys.stderr)
-
-              # --- Final Check ---
               if not project_id:
                   print(f"\nError: ProjectV2 number {project_number} NOT found for owner '{owner_login}' (checked org & user).", file=sys.stderr)
                   print("Hints: Verify org login (case-sensitive), project number, & token permissions ('read:project').", file=sys.stderr)
                   sys.exit(1)
               return project_id
 
-          # --- format_iso_date --- (Same as before)
           def format_iso_date(date_string):
               if not date_string: return ""
               try:
@@ -164,7 +141,6 @@ jobs:
                   return dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
               except ValueError: print(f"Warning: Could not parse date '{date_string}'.", file=sys.stderr); return date_string
 
-          # --- Main GraphQL Query for Project Items --- (Same as before)
           PROJECT_ITEMS_QUERY = """
           query GetProjectItems($projectId: ID!, $firstItems: Int!, $afterItemCursor: String, $firstFields: Int!) {
             node(id: $projectId) { ... on ProjectV2 {
@@ -183,7 +159,7 @@ jobs:
           fragment ProjectV2FieldCommon on ProjectV2Field { name }
           """
 
-          # --- Main Execution Logic --- (Same as before)
+          # --- Main Execution Logic ---
           print(f"\nStarting report generation for project {PROJECT_NUMBER} owned by {OWNER_LOGIN}...")
           project_node_id = get_project_node_id(OWNER_LOGIN, PROJECT_NUMBER)
           all_issues_data = []; found_custom_fields = set(); expected_custom_field_names = set(CUSTOM_FIELD_NAMES.values())
@@ -197,7 +173,9 @@ jobs:
               project_data = data.get("node", {});
               if not project_data: print(f"Warning: Received null data for project node ID {project_node_id}.", file=sys.stderr); break
               items_data = project_data.get("items", {}); nodes = items_data.get("nodes", []); page_info = items_data.get("pageInfo", {}); current_total = items_data.get("totalCount", 0)
-              if current_cursor is None or current_total > total_items: total_items = current_total;
+              if current_cursor is None or current_total > total_items:
+                   total_items = current_total
+                   # CORRECTED INDENTATION on the line below
                    if current_cursor is None: print(f"  Project reports {total_items} total items.")
               if not nodes:
                   if current_cursor is None and total_items == 0: print("  Project has no items.")
@@ -233,7 +211,7 @@ jobs:
               has_next_page = page_info.get("hasNextPage", False); current_cursor = page_info.get("endCursor") if has_next_page else None
               if not has_next_page: print(f"\nFinished fetching all {total_items} items."); break
 
-          # --- Warnings and CSV Writing --- (Same as before)
+          # --- Warnings and CSV Writing ---
           missing_fields = expected_custom_field_names - found_custom_fields
           if missing_fields:
               print("\n--- Warnings ---", file=sys.stderr); print("Following expected custom fields NOT found:", file=sys.stderr)
@@ -253,13 +231,11 @@ jobs:
           echo "Python script 'generate_report.py' created."
 
       - name: Run Report Generation Script
-        # Inherits job-level env vars including the GITHUB_TOKEN (default or PAT)
         run: python generate_report.py
 
       - name: Upload Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Use org_login in artifact name
           name: ${{ format('project-issues-report-{0}-{1}', github.event.inputs.org_login, github.event.inputs.project_number) }}
           path: project_issues_report.csv
           if-no-files-found: warn
