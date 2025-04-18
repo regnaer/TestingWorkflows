@@ -1,6 +1,6 @@
 # Workflow to generate a CSV report of issues in a GitHub Project (V2)
 # Current User: regnaer
-# Generated Timestamp (UTC): 2025-04-18 02:38:34
+# Generated Timestamp (UTC): 2025-04-18 02:45:21
 
 name: Generate Project Issues Report
 
@@ -22,6 +22,12 @@ jobs:
     permissions:
       issues: read     # Needed for reading issue details via API
       contents: read   # Needed for actions/checkout to fetch repository code
+    # Define environment variables at the JOB level to make them available to all steps
+    env:
+      OWNER_LOGIN: ${{ github.event.inputs.owner_login }}
+      PROJECT_NUMBER: ${{ format('{0}', github.event.inputs.project_number) }} # Ensure value is treated as string for env var
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Use PAT for API calls if needed & defined
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,11 +46,7 @@ jobs:
 
       - name: Generate Project Report Script
         id: generate_script
-        env:
-          OWNER_LOGIN: ${{ github.event.inputs.owner_login }}
-          PROJECT_NUMBER: ${{ format('{0}', github.event.inputs.project_number) }} # Ensure value is treated as string for env var
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Use PAT for API calls if needed
+        # REMOVED env block from here, as it's now at the job level
         run: |
           cat << 'EOF' > generate_report.py
           # Python script to fetch GitHub Project issues and generate a CSV report
@@ -56,6 +58,7 @@ jobs:
           from datetime import datetime, timezone
 
           # --- Configuration ---
+          # Read environment variables set at the job level
           OWNER_LOGIN = os.environ.get("OWNER_LOGIN")
           PROJECT_NUMBER_STR = os.environ.get("PROJECT_NUMBER") # Get as string first
           GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -65,15 +68,16 @@ jobs:
 
           # --- Input Validation ---
           if not OWNER_LOGIN:
-              print("Error: Missing input 'owner_login'.", file=sys.stderr)
+              # This error message is what you were seeing
+              print("Error: Missing input 'owner_login' environment variable.", file=sys.stderr)
               sys.exit(1)
           if not PROJECT_NUMBER_STR:
-               print("Error: Missing input 'project_number'.", file=sys.stderr)
+               print("Error: Missing input 'project_number' environment variable.", file=sys.stderr)
                sys.exit(1)
           try:
-               PROJECT_NUMBER = int(PROJECT_NUMBER_STR)
+               PROJECT_NUMBER = int(PROJECT_NUMBER_STR) # Convert string env var to int
           except ValueError:
-               print(f"Error: Invalid 'project_number': '{PROJECT_NUMBER_STR}'. Must be an integer.", file=sys.stderr)
+               print(f"Error: Invalid 'project_number' environment variable: '{PROJECT_NUMBER_STR}'. Must be an integer.", file=sys.stderr)
                sys.exit(1)
           if not GITHUB_TOKEN:
               print("Error: GITHUB_TOKEN environment variable not found. Ensure it's passed correctly.", file=sys.stderr)
@@ -369,12 +373,12 @@ jobs:
           echo "Python script 'generate_report.py' created."
 
       - name: Run Report Generation Script
+        # This step now inherits OWNER_LOGIN, PROJECT_NUMBER, GITHUB_TOKEN from the job's env block
         run: python generate_report.py
 
       - name: Upload Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Corrected line using format() function
           name: ${{ format('project-issues-report-{0}-{1}', github.event.inputs.owner_login, github.event.inputs.project_number) }} # More specific artifact name
           path: project_issues_report.csv
           if-no-files-found: warn
