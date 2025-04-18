@@ -1,40 +1,46 @@
-# Workflow to generate a CSV report of issues in a GitHub Project (V2)
-# Current User: regnaer
-# Generated Timestamp (UTC): 2025-04-18 02:45:21
-
-name: Generate Project Issues Report
+name: Generate Org Project Issues Report
 
 on:
   workflow_dispatch:
     inputs:
-      owner_login:
-        description: 'GitHub Username or Organization Login owning the project'
+      org_login:
+        description: 'GitHub Organization Login owning the project'
         required: true
         type: string
       project_number:
-        description: 'The number of the ProjectV2 (e.g., 5)'
+        description: 'The number of the ProjectV2 within the organization (e.g., 5)'
         required: true
-        type: number # Input type is number
+        type: number
 
 jobs:
   generate_report:
     runs-on: ubuntu-latest
+    # Permissions requested for the default GITHUB_TOKEN
     permissions:
       issues: read     # Needed for reading issue details via API
-      contents: read   # Needed for actions/checkout to fetch repository code
-    # Define environment variables at the JOB level to make them available to all steps
+      contents: read   # Needed for actions/checkout
+      # read:project scope cannot be requested here, it must be granted via
+      # Org/Repo Settings (Actions > General > Workflow permissions) or by using a PAT.
+    # Define environment variables at the JOB level
     env:
-      OWNER_LOGIN: ${{ github.event.inputs.owner_login }}
-      PROJECT_NUMBER: ${{ format('{0}', github.event.inputs.project_number) }} # Ensure value is treated as string for env var
+      # Use the organization login input for the owner
+      OWNER_LOGIN: ${{ github.event.inputs.org_login }}
+      PROJECT_NUMBER: ${{ format('{0}', github.event.inputs.project_number) }}
+
+      # --- Authentication: Choose ONE ---
+      # Option 1 (Default): Use the built-in token. Requires Org/Repo settings to grant it project read access.
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Use PAT for API calls if needed & defined
+      # Option 2 (Fallback): Use a PAT stored in secrets. PAT needs 'read:project' & 'repo' scopes.
+      # GITHUB_TOKEN: ${{ secrets.PROJECT_REPORT_PAT }} # <-- Uncomment this line if Option 1 fails due to project permissions
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repository code from Organization Repo
         uses: actions/checkout@v4
-        # If the repo is private AND the above permission doesn't work (e.g., org settings restrict token),
-        # you might need a PAT with 'repo' scope stored as a secret (e.g., CHECKOUT_PAT):
+        # Checkout uses the default GITHUB_TOKEN granted by the permissions block by default.
+        # If using a PAT for API calls (Option 2 above) AND checkout fails (e.g., private repo),
+        # you might need to explicitly pass the PAT here too. Ensure PAT has 'repo' scope.
         # with:
-        #   token: ${{ secrets.CHECKOUT_PAT }}
+        #   token: ${{ secrets.PROJECT_REPORT_PAT }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,10 +52,11 @@ jobs:
 
       - name: Generate Project Report Script
         id: generate_script
-        # REMOVED env block from here, as it's now at the job level
+        # Script generation uses the job-level env vars
         run: |
           cat << 'EOF' > generate_report.py
           # Python script to fetch GitHub Project issues and generate a CSV report
+          # Now expects OWNER_LOGIN to be an Organization Login.
           import os
           import sys
           import requests
@@ -58,275 +65,161 @@ jobs:
           from datetime import datetime, timezone
 
           # --- Configuration ---
-          # Read environment variables set at the job level
-          OWNER_LOGIN = os.environ.get("OWNER_LOGIN")
-          PROJECT_NUMBER_STR = os.environ.get("PROJECT_NUMBER") # Get as string first
-          GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+          OWNER_LOGIN = os.environ.get("OWNER_LOGIN") # Org Login from workflow input
+          PROJECT_NUMBER_STR = os.environ.get("PROJECT_NUMBER")
+          GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") # Default token or PAT from workflow env
           API_URL = "https://api.github.com/graphql"
           CSV_FILENAME = "project_issues_report.csv"
-          PAGE_SIZE = 100 # Max items per page for project items query
+          PAGE_SIZE = 100
 
           # --- Input Validation ---
-          if not OWNER_LOGIN:
-              # This error message is what you were seeing
-              print("Error: Missing input 'owner_login' environment variable.", file=sys.stderr)
-              sys.exit(1)
-          if not PROJECT_NUMBER_STR:
-               print("Error: Missing input 'project_number' environment variable.", file=sys.stderr)
-               sys.exit(1)
-          try:
-               PROJECT_NUMBER = int(PROJECT_NUMBER_STR) # Convert string env var to int
-          except ValueError:
-               print(f"Error: Invalid 'project_number' environment variable: '{PROJECT_NUMBER_STR}'. Must be an integer.", file=sys.stderr)
-               sys.exit(1)
-          if not GITHUB_TOKEN:
-              print("Error: GITHUB_TOKEN environment variable not found. Ensure it's passed correctly.", file=sys.stderr)
-              sys.exit(1)
+          if not OWNER_LOGIN: print("Error: Missing 'OWNER_LOGIN' environment variable.", file=sys.stderr); sys.exit(1)
+          if not PROJECT_NUMBER_STR: print("Error: Missing 'PROJECT_NUMBER' environment variable.", file=sys.stderr); sys.exit(1)
+          try: PROJECT_NUMBER = int(PROJECT_NUMBER_STR)
+          except ValueError: print(f"Error: Invalid 'PROJECT_NUMBER' env var: '{PROJECT_NUMBER_STR}'.", file=sys.stderr); sys.exit(1)
+          if not GITHUB_TOKEN: print("Error: GITHUB_TOKEN env var not found.", file=sys.stderr); sys.exit(1)
 
-
-          # --- Field Definitions ---
+          # --- Field Definitions --- (Same as before)
           CUSTOM_FIELD_NAMES = {
-              "sprint": "Sprint",
-              "team": "Team",
-              "priority": "Priority",
-              "severity": "Severity",
-              "effort": "Effort",
-              "status": "Status",
-              "t_shirt_size": "T-Shirt Size",
-              "blocked": "Blocked?"
+              "sprint": "Sprint", "team": "Team", "priority": "Priority", "severity": "Severity",
+              "effort": "Effort", "status": "Status", "t_shirt_size": "T-Shirt Size", "blocked": "Blocked?"
           }
-
           CSV_HEADERS = [
-              "Title", "Issue Number", "Type", "Parent Issue Number", "Sprint",
-              "Milestone", "Created_at", "Closed_at", "Team", "Priority",
-              "Severity", "Effort", "Status", "Labels", "T-Shirt Size", "Blocked?"
+              "Title", "Issue Number", "Type", "Parent Issue Number", "Sprint", "Milestone",
+              "Created_at", "Closed_at", "Team", "Priority", "Severity", "Effort",
+              "Status", "Labels", "T-Shirt Size", "Blocked?"
           ]
 
-          # --- Helper Functions ---
+          # --- Helper Functions --- (Same as before)
           def run_graphql_query(query, variables=None):
-              """Sends a GraphQL query to the GitHub API and handles basic errors."""
-              headers = {
-                  "Authorization": f"bearer {GITHUB_TOKEN}",
-                  "Content-Type": "application/json",
-                  "GraphQL-Features": "issue_types"
-              }
+              headers = { "Authorization": f"bearer {GITHUB_TOKEN}", "Content-Type": "application/json", "GraphQL-Features": "issue_types" }
               payload = {"query": query}
-              if variables:
-                  payload["variables"] = variables
-
+              if variables: payload["variables"] = variables
               try:
                   response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
                   response.raise_for_status()
-              except requests.exceptions.Timeout:
-                  print("Error: GraphQL request timed out.", file=sys.stderr)
-                  sys.exit(1)
+              except requests.exceptions.Timeout: print("Error: GraphQL request timed out.", file=sys.stderr); sys.exit(1)
               except requests.exceptions.RequestException as e:
-                  print(f"Error: Network or Request error during GraphQL query: {e}", file=sys.stderr)
-                  if e.response is not None:
-                       print(f"Response Status: {e.response.status_code}", file=sys.stderr)
-                       print(f"Response Text: {e.response.text[:500]}...", file=sys.stderr)
+                  print(f"Error: Network/Request error during GraphQL query: {e}", file=sys.stderr)
+                  if e.response is not None: print(f"Response Status: {e.response.status_code}\nResponse Text: {e.response.text[:500]}...", file=sys.stderr)
                   sys.exit(1)
-
               result = response.json()
-
               if "errors" in result:
-                  print("Error: GraphQL API returned errors:", file=sys.stderr)
-                  print(json.dumps(result["errors"], indent=2), file=sys.stderr)
-                  error_message = result['errors'][0].get('message', 'Unknown GraphQL error')
-                  error_type = result['errors'][0].get('type')
-                  if "Could not resolve to ProjectV2" in error_message or error_type == "NOT_FOUND":
-                      print("Hint: Double-check OWNER_LOGIN/PROJECT_NUMBER & token permission for project.", file=sys.stderr)
-                  elif "Could not resolve to an Organization" in error_message or "Could not resolve to a User" in error_message:
-                      print(f"Hint: Ensure '{OWNER_LOGIN}' is correct login (case-sensitive).", file=sys.stderr)
-                  elif "FIELD_ACCESS_DENIED" in str(result["errors"]):
-                      print("Hint: Token might be missing permissions (e.g., implicit repo/org access, or PAT needs 'read:project', 'read:org', 'repo').", file=sys.stderr)
-                  elif "API rate limit exceeded" in error_message:
-                      print("Hint: Hit API rate limit. Try again later.", file=sys.stderr)
+                  print("Error: GraphQL API returned errors:", file=sys.stderr); print(json.dumps(result["errors"], indent=2), file=sys.stderr)
+                  error_message = result['errors'][0].get('message', 'Unknown GraphQL error'); error_type = result['errors'][0].get('type')
+                  # Add more specific hints based on org context
+                  if "Could not resolve to ProjectV2" in error_message or error_type == "NOT_FOUND": print(f"Hint: Check ORG_LOGIN ('{OWNER_LOGIN}') / PROJECT_NUMBER ({PROJECT_NUMBER}). Ensure token has project access.", file=sys.stderr)
+                  elif "Could not resolve to an Organization" in error_message: print(f"Hint: Ensure '{OWNER_LOGIN}' is the correct org login (case-sensitive).", file=sys.stderr)
+                  elif "Could not resolve to a User" in error_message: print(f"Hint: '{OWNER_LOGIN}' was treated as a user, expected org.", file=sys.stderr)
+                  elif "FIELD_ACCESS_DENIED" in str(result["errors"]): print("Hint: Token missing scopes/permissions? (read:project, repo, read:org). Check Org/Repo Action settings or PAT scopes.", file=sys.stderr)
+                  elif "API rate limit exceeded" in error_message: print("Hint: Hit API rate limit.", file=sys.stderr)
                   sys.exit(f"GraphQL query failed: {error_message}")
-
               return result.get("data", {})
 
+          # --- get_project_node_id --- (Logic remains valid, org query is now primary)
           def get_project_node_id(owner_login, project_number):
-              """Gets the GraphQL Node ID for a ProjectV2, checking both org and user."""
-              project_id = None
-              project_title = None
-
-              query_org = """
-              query GetOrgProjectID($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) { id title }
-                }
-              }
-              """
+              project_id = None; project_title = None
+              # --- Try Org Project --- (This is now the expected path)
+              query_org = "query GetOrgProjID($owner: String!, $number: Int!) { organization(login: $owner){ projectV2(number: $number){ id title } } }"
               variables = {"owner": owner_login, "number": project_number}
               print(f"Attempting to find project #{project_number} under organization '{owner_login}'...")
               try:
                   data_org = run_graphql_query(query_org, variables)
                   project_data = data_org.get("organization", {}).get("projectV2") if data_org.get("organization") else None
                   if project_data and project_data.get("id"):
-                      project_id = project_data.get("id")
-                      project_title = project_data.get("title", "N/A")
+                      project_id = project_data.get("id"); project_title = project_data.get("title", "N/A")
                       print(f"Success: Found Organization Project '{project_title}' (ID: {project_id})")
-              except SystemExit:
-                   print("Failed to query organization project.", file=sys.stderr)
-              except Exception as e:
-                   print(f"Warning: Unexpected error during organization project check: {e}", file=sys.stderr)
+                  elif data_org.get("organization") is None:
+                      # This case happens if the login isn't actually an org
+                      print(f"Warning: '{owner_login}' could not be resolved as an Organization.", file=sys.stderr)
+              except SystemExit: print("-> Failed querying organization project.", file=sys.stderr) # Error handled by run_graphql_query
+              except Exception as e: print(f"Warning: Unexpected error during org project check: {e}", file=sys.stderr)
 
+              # --- Try User Project --- (Fallback, will likely not be reached if org_login is valid)
               if not project_id:
-                  print(f"Project not found under organization, checking user '{owner_login}'...")
-                  query_user = """
-                  query GetUserProjectID($owner: String!, $number: Int!) {
-                    user(login: $owner) {
-                      projectV2(number: $number) { id title }
-                    }
-                  }
-                  """
+                  print(f"Organization project not found, checking if '{owner_login}' is a user with project #{project_number}...")
+                  query_user = "query GetUserProjID($owner: String!, $number: Int!) { user(login: $owner){ projectV2(number: $number){ id title } } }"
                   try:
                       data_user = run_graphql_query(query_user, variables)
                       project_data = data_user.get("user", {}).get("projectV2") if data_user.get("user") else None
                       if project_data and project_data.get("id"):
-                          project_id = project_data.get("id")
-                          project_title = project_data.get("title", "N/A")
+                          project_id = project_data.get("id"); project_title = project_data.get("title", "N/A")
                           print(f"Success: Found User Project '{project_title}' (ID: {project_id})")
-                  except SystemExit:
-                       print("Failed to query user project.", file=sys.stderr)
-                  except Exception as e:
-                       print(f"Warning: Unexpected error during user project check: {e}", file=sys.stderr)
+                  except SystemExit: print("-> Failed querying user project.", file=sys.stderr)
+                  except Exception as e: print(f"Warning: Unexpected error during user project check: {e}", file=sys.stderr)
 
+              # --- Final Check ---
               if not project_id:
-                  print(f"\nError: ProjectV2 number {project_number} was NOT found for owner '{owner_login}'.", file=sys.stderr)
-                  print("Hints: Verify owner login (case-sensitive), project number, and token permissions/access.", file=sys.stderr)
+                  print(f"\nError: ProjectV2 number {project_number} NOT found for owner '{owner_login}' (checked org & user).", file=sys.stderr)
+                  print("Hints: Verify org login (case-sensitive), project number, & token permissions ('read:project').", file=sys.stderr)
                   sys.exit(1)
-
               return project_id
 
+          # --- format_iso_date --- (Same as before)
           def format_iso_date(date_string):
-              """Formats ISO 8601 date string to 'YYYY-MM-DD HH:MM:SS' UTC or returns empty string."""
               if not date_string: return ""
               try:
-                  if date_string.endswith('Z'):
-                      dt = datetime.fromisoformat(date_string.replace('Z', '+00:00'))
-                  else:
-                      dt = datetime.fromisoformat(date_string)
-                      if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-                           dt = dt.replace(tzinfo=timezone.utc)
-                  dt_utc = dt.astimezone(timezone.utc)
-                  return dt_utc.strftime('%Y-%m-%d %H:%M:%S')
-              except ValueError:
-                  print(f"Warning: Could not parse date '{date_string}'. Returning as is.", file=sys.stderr)
-                  return date_string
+                  dt = datetime.fromisoformat(date_string.replace('Z', '+00:00')) if date_string.endswith('Z') else datetime.fromisoformat(date_string)
+                  if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None: dt = dt.replace(tzinfo=timezone.utc)
+                  return dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+              except ValueError: print(f"Warning: Could not parse date '{date_string}'.", file=sys.stderr); return date_string
 
-          # --- Main GraphQL Query for Project Items ---
+          # --- Main GraphQL Query for Project Items --- (Same as before)
           PROJECT_ITEMS_QUERY = """
           query GetProjectItems($projectId: ID!, $firstItems: Int!, $afterItemCursor: String, $firstFields: Int!) {
-            node(id: $projectId) {
-              ... on ProjectV2 {
+            node(id: $projectId) { ... on ProjectV2 {
                 items(first: $firstItems, after: $afterItemCursor, orderBy: {field: POSITION, direction: ASC}) {
-                  totalCount
-                  pageInfo { endCursor hasNextPage }
-                  nodes {
-                    id createdAt
-                    content {
-                      __typename
-                      ... on Issue {
-                        id number title url state createdAt closedAt
-                        milestone { title }
-                        labels(first: 20) { nodes { name } }
-                        issueType { name }
-                      }
-                      ... on PullRequest { id number title url }
-                    }
-                    fieldValues(first: $firstFields) {
-                      nodes {
-                        __typename
+                  totalCount pageInfo { endCursor hasNextPage }
+                  nodes { id createdAt content { __typename
+                      ... on Issue { id number title url state createdAt closedAt milestone { title } labels(first: 20) { nodes { name } } issueType { name } }
+                      ... on PullRequest { id number title url } }
+                    fieldValues(first: $firstFields) { nodes { __typename
                         ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
                         ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
                         ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
                         ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } }
                         ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
-                        ... on ProjectV2ItemFieldValueCommon { field { ... on ProjectV2FieldCommon { name } } }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
+                        ... on ProjectV2ItemFieldValueCommon { field { ... on ProjectV2FieldCommon { name } } } }}}}}}}
           fragment ProjectV2FieldCommon on ProjectV2Field { name }
           """
 
-          # --- Main Execution Logic ---
+          # --- Main Execution Logic --- (Same as before)
           print(f"\nStarting report generation for project {PROJECT_NUMBER} owned by {OWNER_LOGIN}...")
           project_node_id = get_project_node_id(OWNER_LOGIN, PROJECT_NUMBER)
-
-          all_issues_data = []
-          found_custom_fields = set()
-          expected_custom_field_names = set(CUSTOM_FIELD_NAMES.values())
-
-          has_next_page = True
-          current_cursor = None
-          print("\nFetching project items...")
-          item_count = 0
-          total_items = 0
-
+          all_issues_data = []; found_custom_fields = set(); expected_custom_field_names = set(CUSTOM_FIELD_NAMES.values())
+          has_next_page = True; current_cursor = None; print("\nFetching project items..."); item_count = 0; total_items = 0
           while has_next_page:
-              print(f"  Fetching page starting with cursor: {current_cursor if current_cursor else 'None'}")
-              variables = {
-                  "projectId": project_node_id,
-                  "firstItems": PAGE_SIZE,
-                  "afterItemCursor": current_cursor,
-                  "firstFields": 50
-              }
-              try:
-                  data = run_graphql_query(PROJECT_ITEMS_QUERY, variables)
-              except SystemExit:
-                   print("Exiting due to error during item fetch.", file=sys.stderr)
-                   has_next_page = False; break
-              except Exception as e:
-                   print(f"\nCritical Error during GraphQL query execution: {e}", file=sys.stderr)
-                   sys.exit(1)
-
-              project_data = data.get("node", {})
-              if not project_data:
-                   print(f"Warning: Received null data for project node ID {project_node_id} during item fetch.", file=sys.stderr)
-                   break
-
-              items_data = project_data.get("items", {})
-              nodes = items_data.get("nodes", [])
-              page_info = items_data.get("pageInfo", {})
-              current_total = items_data.get("totalCount", 0)
-
-              if current_cursor is None or current_total > total_items:
-                   total_items = current_total
+              print(f"  Fetching page starting with cursor: {current_cursor or 'None'}")
+              variables = { "projectId": project_node_id, "firstItems": PAGE_SIZE, "afterItemCursor": current_cursor, "firstFields": 50 }
+              try: data = run_graphql_query(PROJECT_ITEMS_QUERY, variables)
+              except SystemExit: print("Exiting due to error during item fetch.", file=sys.stderr); has_next_page = False; break
+              except Exception as e: print(f"\nCritical Error during GraphQL query: {e}", file=sys.stderr); sys.exit(1)
+              project_data = data.get("node", {});
+              if not project_data: print(f"Warning: Received null data for project node ID {project_node_id}.", file=sys.stderr); break
+              items_data = project_data.get("items", {}); nodes = items_data.get("nodes", []); page_info = items_data.get("pageInfo", {}); current_total = items_data.get("totalCount", 0)
+              if current_cursor is None or current_total > total_items: total_items = current_total;
                    if current_cursor is None: print(f"  Project reports {total_items} total items.")
-
               if not nodes:
                   if current_cursor is None and total_items == 0: print("  Project has no items.")
-                  elif total_items > item_count: print(f"Warning: Received empty item list unexpectedly (processed {item_count}/{total_items}). Stopping.", file=sys.stderr)
+                  elif total_items > item_count: print(f"Warning: Received empty item list unexpectedly ({item_count}/{total_items}). Stopping.", file=sys.stderr)
                   break
-
               page_item_count = 0
               for item in nodes:
-                  item_count += 1; page_item_count += 1
-                  content = item.get("content")
+                  item_count += 1; page_item_count += 1; content = item.get("content")
                   if not content or content.get("__typename") != "Issue": continue
-
                   issue_details = {header: "" for header in CSV_HEADERS}
-                  issue_details["Title"] = content.get("title", "")
-                  issue_details["Issue Number"] = content.get("number", "")
+                  issue_details["Title"] = content.get("title", ""); issue_details["Issue Number"] = content.get("number", "")
                   issue_details["Type"] = content.get("issueType", {}).get("name", "")
                   issue_details["Milestone"] = content.get("milestone", {}).get("title", "") if content.get("milestone") else ""
                   issue_details["Created_at"] = format_iso_date(content.get("createdAt", ""))
                   issue_details["Closed_at"] = format_iso_date(content.get("closedAt", ""))
                   labels_list = [label.get("name") for label in content.get("labels", {}).get("nodes", []) if label.get("name")]
                   issue_details["Labels"] = ", ".join(labels_list)
-
                   field_values = item.get("fieldValues", {}).get("nodes", [])
                   for field_value in field_values:
                       field_node = field_value.get("field", {}); field_name = field_node.get("name") if field_node else None
                       if not field_name: continue
                       if field_name in expected_custom_field_names: found_custom_fields.add(field_name)
-
                       if field_name == CUSTOM_FIELD_NAMES.get("sprint"): issue_details["Sprint"] = field_value.get("title", "")
                       elif field_name == CUSTOM_FIELD_NAMES.get("team"): issue_details["Team"] = field_value.get("name", "")
                       elif field_name == CUSTOM_FIELD_NAMES.get("priority"): issue_details["Priority"] = field_value.get("name", "")
@@ -335,51 +228,39 @@ jobs:
                       elif field_name == CUSTOM_FIELD_NAMES.get("status"): issue_details["Status"] = field_value.get("name", "")
                       elif field_name == CUSTOM_FIELD_NAMES.get("t_shirt_size"): issue_details["T-Shirt Size"] = field_value.get("name", "")
                       elif field_name == CUSTOM_FIELD_NAMES.get("blocked"): issue_details["Blocked?"] = field_value.get("name", "")
-
                   all_issues_data.append(issue_details)
+              print(f"  Processed {page_item_count} items from page ({item_count}/{total_items} total).")
+              has_next_page = page_info.get("hasNextPage", False); current_cursor = page_info.get("endCursor") if has_next_page else None
+              if not has_next_page: print(f"\nFinished fetching all {total_items} items."); break
 
-              print(f"  Processed {page_item_count} items from this page ({item_count}/{total_items} total processed).")
-
-              has_next_page = page_info.get("hasNextPage", False)
-              current_cursor = page_info.get("endCursor") if has_next_page else None
-              if not has_next_page: print(f"\nFinished fetching all items ({total_items} total)."); break
-
+          # --- Warnings and CSV Writing --- (Same as before)
           missing_fields = expected_custom_field_names - found_custom_fields
           if missing_fields:
-              print("\n--- Warnings ---", file=sys.stderr)
-              print("The following expected custom fields were NOT found:", file=sys.stderr)
+              print("\n--- Warnings ---", file=sys.stderr); print("Following expected custom fields NOT found:", file=sys.stderr)
               for field in sorted(list(missing_fields)): print(f"  - '{field}'", file=sys.stderr)
-              print("Corresponding CSV columns will likely be empty.", file=sys.stderr)
-              print("Verify field names (case-sensitive) in project settings & script's CUSTOM_FIELD_NAMES.", file=sys.stderr)
-              print("---------------\n")
-
-          print(f"\nPreparing to write {len(all_issues_data)} issues to {CSV_FILENAME}...")
-          if not all_issues_data and total_items > 0: print("Warning: No issue data collected despite project items reported. CSV has headers only.", file=sys.stderr)
-          elif not all_issues_data: print("No issue data collected. CSV has headers only.")
-
+              print("Corresponding CSV columns may be empty. Verify names (case-sensitive).", file=sys.stderr); print("---------------\n")
+          print(f"\nWriting {len(all_issues_data)} issues to {CSV_FILENAME}...")
+          if not all_issues_data: print("Warning: No issue data collected. CSV will contain headers only." if total_items > 0 else "No issue data collected. CSV has headers only.", file=sys.stderr)
           try:
               with open(CSV_FILENAME, 'w', newline='', encoding='utf-8') as csvfile:
-                  writer = csv.DictWriter(csvfile, fieldnames=CSV_HEADERS, extrasaction='ignore')
-                  writer.writeheader()
+                  writer = csv.DictWriter(csvfile, fieldnames=CSV_HEADERS, extrasaction='ignore'); writer.writeheader()
                   if all_issues_data: writer.writerows(all_issues_data)
               print(f"Successfully wrote data to {CSV_FILENAME}")
-          except IOError as e:
-              print(f"\nError: Failed to write CSV file '{CSV_FILENAME}': {e}", file=sys.stderr)
-              sys.exit(1)
-
+          except IOError as e: print(f"\nError: Failed to write CSV file '{CSV_FILENAME}': {e}", file=sys.stderr); sys.exit(1)
           print("\nScript finished successfully.")
 
           EOF
           echo "Python script 'generate_report.py' created."
 
       - name: Run Report Generation Script
-        # This step now inherits OWNER_LOGIN, PROJECT_NUMBER, GITHUB_TOKEN from the job's env block
+        # Inherits job-level env vars including the GITHUB_TOKEN (default or PAT)
         run: python generate_report.py
 
       - name: Upload Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ format('project-issues-report-{0}-{1}', github.event.inputs.owner_login, github.event.inputs.project_number) }} # More specific artifact name
+          # Use org_login in artifact name
+          name: ${{ format('project-issues-report-{0}-{1}', github.event.inputs.org_login, github.event.inputs.project_number) }}
           path: project_issues_report.csv
           if-no-files-found: warn
           retention-days: 7
