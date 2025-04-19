@@ -37,7 +37,6 @@ jobs:
           while [ "$has_next_page" = "true" ]; do
             echo "Running GraphQL query with endCursor: $end_cursor"
 
-            # Use heredoc for the query to ensure proper formatting
             response=$(gh api graphql -F projectId="$PROJECT_ID" -F endCursor="$end_cursor" -f query='
             query GetProjectItemsAndIssueDetails($projectId: ID!, $endCursor: String) {
               node(id: $projectId) {
@@ -47,13 +46,25 @@ jobs:
                       id
                       fieldValues(first: 20) {
                         nodes {
+                          __typename
                           ... on ProjectV2ItemFieldTextValue {
                             text
                             field {
                               name
                             }
                           }
-                          # Additional fields...
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                            field {
+                              name
+                            }
+                          }
+                          ... on ProjectV2ItemFieldDateValue {
+                            date
+                            field {
+                              name
+                            }
+                          }
                         }
                       }
                       content {
@@ -62,7 +73,6 @@ jobs:
                           number
                           title
                           state
-                          # Additional fields...
                         }
                       }
                     }
@@ -111,7 +121,7 @@ jobs:
               (.content.assignees.nodes | map(.login) | join(",")) // "",
               (.content.labels.nodes | map(.name) | join(",")) // "",
               .content.milestone.title // "",
-              (.fieldValues.nodes | map(select(.field.name? == "Sprint")) | first | .title // ""),
+              (.fieldValues.nodes | map(select(.field.name? == "Sprint")) | first | .name // ""),
               (.fieldValues.nodes | map(select(.field.name? == "Status")) | first | .name // ""),
               (.fieldValues.nodes | map(select(.field.name? == "Team")) | first | .name // ""),
               (.fieldValues.nodes | map(.__typename | tostring) | join("|")) // "" # Include type debugging
