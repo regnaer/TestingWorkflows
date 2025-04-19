@@ -100,3 +100,9 @@ query GetProjectItemsAndIssueDetails(
     }
   }
 }
+
+Variables
+
+{
+  "projectId": "Enter Project ID"
+}
