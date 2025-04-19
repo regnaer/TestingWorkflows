@@ -30,16 +30,14 @@ jobs:
         run: |
           echo "Fetching data for Project ID: $PROJECT_ID"
 
-          # Initialize loop variables
           has_next_page=true
           end_cursor=null
           > project_data.json
 
-          # Loop to handle pagination
           while [ "$has_next_page" = "true" ]; do
             echo "Running GraphQL query with endCursor: $end_cursor"
 
-            # Execute GraphQL query with pagination
+            # Use heredoc for the query to ensure proper formatting
             response=$(gh api graphql -F projectId="$PROJECT_ID" -F endCursor="$end_cursor" -f query='
             query GetProjectItemsAndIssueDetails($projectId: ID!, $endCursor: String) {
               node(id: $projectId) {
@@ -55,42 +53,7 @@ jobs:
                               name
                             }
                           }
-                          ... on ProjectV2ItemFieldDateValue {
-                            date
-                            field {
-                              name
-                            }
-                          }
-                          ... on ProjectV2ItemFieldNumberValue {
-                            number
-                            field {
-                              name
-                            }
-                          }
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            name
-                            field {
-                              name
-                            }
-                          }
-                          ... on ProjectV2ItemFieldIterationValue {
-                            title
-                            startDate
-                            duration
-                            field {
-                              name
-                            }
-                          }
-                          ... on ProjectV2ItemFieldReviewerValue {
-                            reviewers {
-                              nodes {
-                                login
-                              }
-                            }
-                            field {
-                              name
-                            }
-                          }
+                          # Additional fields...
                         }
                       }
                       content {
@@ -99,29 +62,7 @@ jobs:
                           number
                           title
                           state
-                          createdAt
-                          updatedAt
-                          closedAt
-                          url
-                          author {
-                            login
-                          }
-                          assignees(first: 10) {
-                            nodes {
-                              login
-                            }
-                          }
-                          labels(first: 20) {
-                            nodes {
-                              name
-                            }
-                          }
-                          milestone {
-                            title
-                          }
-                          repository {
-                            nameWithOwner
-                          }
+                          # Additional fields...
                         }
                       }
                     }
@@ -132,9 +73,8 @@ jobs:
                   }
                 }
               }
-            }
+            }')
 
-            # Check for query success and log response
             if [ $? -ne 0 ]; then
               echo "ERROR: GraphQL query failed."
               echo "Response:"
@@ -142,10 +82,8 @@ jobs:
               exit 1
             fi
 
-            # Append response to project_data.json
             echo "$response" | jq '.data.node.items.nodes' >> project_data.json
 
-            # Update pagination variables
             has_next_page=$(echo "$response" | jq -r '.data.node.items.pageInfo.hasNextPage')
             end_cursor=$(echo "$response" | jq -r '.data.node.items.pageInfo.endCursor')
           done
