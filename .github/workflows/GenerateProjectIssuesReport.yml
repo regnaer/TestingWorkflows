@@ -54,7 +54,8 @@ jobs:
                             ... on ProjectV2ItemFieldDateValue { date field { name } }
                             ... on ProjectV2ItemFieldNumberValue { number field { name } }
                             ... on ProjectV2ItemFieldSingleSelectValue { name field { name } }
-                            ... on ProjectV2ItemFieldIterationValue { title field { name } }
+                            ... on ProjectV2ItemFieldIterationValue { title startDate duration field { name } }
+                            # Add other types here if applicable
                           }
                         }
                         content {
