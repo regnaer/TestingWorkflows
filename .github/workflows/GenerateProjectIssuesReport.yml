@@ -26,12 +26,12 @@ jobs:
       - name: Fetch Project Data via GraphQL
         id: fetch_data
         env:
-          # Use a PAT stored as a secret. Needs 'repo', 'project', 'read:user' scopes.
-          # GITHUB_TOKEN likely won't have access to user projects or needed scopes.
+          # Use a Classic PAT stored as a secret. Needs 'repo' and 'project' scopes.
           GH_TOKEN: ${{ secrets.GH_PAT_PROJECTS }}
           PROJECT_ID: ${{ inputs.project_node_id }}
         run: |
-          # Store the GraphQL query in a variable
+          echo "Attempting to fetch data for Project ID: $PROJECT_ID"
+          # Store the full GraphQL query in a variable
           read -r -d '' query << EOF
           query GetProjectItemsAndIssueDetails(\$projectId: ID!) {
             node(id: \$projectId) {
@@ -65,12 +65,15 @@ jobs:
                         assignees(first: 10) { nodes { login } }
                         labels(first: 20) { nodes { name color } }
                         milestone { title number state }
-                        issueType { name }
+                        issueType { name } # Kept for future use
                         parent {
                           ... on Issue { title number url id issueType { name } }
                         }
                         repository { nameWithOwner }
                       }
+                      # Add other content types if needed (e.g., DraftIssue, PullRequest)
+                      # ... on DraftIssue { id title body }
+                      # ... on PullRequest { id number title state url repository { nameWithOwner } }
                     }
                   }
                   pageInfo { endCursor hasNextPage }
@@ -80,16 +83,26 @@ jobs:
           }
           EOF
 
-          # Execute the query using GitHub CLI and save to file
-          gh api graphql -F projectId="$PROJECT_ID" -f query="$query" > project_data.json
+          # Execute the query, save to file, and handle gh command failure
+          echo "Executing GraphQL query..."
+          gh api graphql -F projectId="$PROJECT_ID" -f query="$query" > project_data.json || {
+            echo "ERROR: 'gh api graphql' command failed. API Response was:"
+            cat project_data.json # Print the raw response (likely contains API error)
+            exit 1 # Exit the script with failure status
+          }
 
-          echo "GraphQL query executed. Response saved to project_data.json"
-          # Check if data node exists to prevent jq errors later
-          if ! jq -e '.data.node' project_data.json > /dev/null; then
-            echo "Error: '.data.node' not found in the GraphQL response."
-            jq . project_data.json # Print response for debugging
-            exit 1
+          echo "GraphQL query command succeeded. Response saved to project_data.json. Checking content..."
+
+          # Check if the expected data structure exists in the response using refined jq check
+          if ! jq -e '.data.node // empty' project_data.json > /dev/null; then
+            echo "ERROR: '.data.node' not found in the GraphQL response, or response was empty/invalid."
+            echo "--- Start of project_data.json content ---"
+            jq . project_data.json # Print the JSON response for debugging
+            echo "--- End of project_data.json content ---"
+            exit 1 # Exit the script with failure status
           fi
+
+          echo "Successfully fetched and validated project data."
 
       - name: Process Data and Generate CSV
         id: generate_csv
