@@ -18,7 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read # Needed for checkout
-      projects: read # Explicit project permission added for safety
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
