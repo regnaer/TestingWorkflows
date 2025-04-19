@@ -18,103 +18,100 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read # Needed for checkout
-      # No explicit project permissions here, relies on PAT
+      projects: read # Explicit project permission added for safety
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch Project Data via GraphQL
+      - name: Fetch Project Data via GraphQL (with Pagination)
         id: fetch_data
         env:
           # Use a Classic PAT stored as a secret. Needs 'repo' and 'project' scopes.
           GH_TOKEN: ${{ secrets.GH_PAT_PROJECTS }}
           PROJECT_ID: ${{ inputs.project_node_id }}
         run: |
-          echo "Attempting to fetch data for Project ID: $PROJECT_ID"
-          # Store the full GraphQL query in a variable
-          read -r -d '' query << EOF
-          query GetProjectItemsAndIssueDetails(\$projectId: ID!) {
-            node(id: \$projectId) {
-              ... on ProjectV2 {
-                id
-                title
-                number
-                items(first: 100) { # Adjust 'first' or implement pagination if needed
-                  nodes {
-                    id
-                    fieldValues(first: 20) {
+          echo "Fetching data for Project ID: $PROJECT_ID"
+
+          # Initialize loop variables
+          has_next_page=true
+          end_cursor=null
+          > project_data.json # Start fresh
+
+          # Loop to handle pagination
+          while [ "$has_next_page" = "true" ]; do
+            echo "Running GraphQL query with endCursor: $end_cursor"
+
+            # Execute GraphQL query with pagination
+            response=$(gh api graphql -F projectId="$PROJECT_ID" -F endCursor="$end_cursor" -f query='
+              query GetProjectItemsAndIssueDetails($projectId: ID!, $endCursor: String) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100, after: $endCursor) {
                       nodes {
-                        ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name id } } }
-                        ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2Field { name id } } }
-                        ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name id } } }
-                        ... on ProjectV2ItemFieldSingleSelectValue { name optionId field { ... on ProjectV2SingleSelectField { name id } } }
-                        ... on ProjectV2ItemFieldIterationValue { title startDate duration iterationId field { ... on ProjectV2IterationField { name id } } }
-                      }
-                    }
-                    content {
-                      ... on Issue {
                         id
-                        number
-                        title
-                        state
-                        createdAt
-                        updatedAt
-                        closedAt
-                        url
-                        author { login }
-                        assignees(first: 10) { nodes { login } }
-                        labels(first: 20) { nodes { name color } }
-                        milestone { title number state }
-                        issueType { name } # Kept for future use
-                        parent {
-                          ... on Issue { title number url id issueType { name } }
+                        fieldValues(first: 20) {
+                          nodes {
+                            ... on ProjectV2ItemFieldTextValue { text field { name } }
+                            ... on ProjectV2ItemFieldDateValue { date field { name } }
+                            ... on ProjectV2ItemFieldNumberValue { number field { name } }
+                            ... on ProjectV2ItemFieldSingleSelectValue { name field { name } }
+                            ... on ProjectV2ItemFieldIterationValue { title field { name } }
+                          }
                         }
-                        repository { nameWithOwner }
+                        content {
+                          ... on Issue {
+                            id
+                            number
+                            title
+                            state
+                            createdAt
+                            updatedAt
+                            closedAt
+                            url
+                            author { login }
+                            assignees(first: 10) { nodes { login } }
+                            labels(first: 20) { nodes { name } }
+                            milestone { title }
+                            repository { nameWithOwner }
+                          }
+                        }
                       }
-                      # Add other content types if needed (e.g., DraftIssue, PullRequest)
-                      # ... on DraftIssue { id title body }
-                      # ... on PullRequest { id number title state url repository { nameWithOwner } }
+                      pageInfo {
+                        endCursor
+                        hasNextPage
+                      }
                     }
                   }
-                  pageInfo { endCursor hasNextPage }
                 }
-              }
-            }
-          }
-          EOF
+              }'
+            )
 
-          # Execute the query, save to file, and handle gh command failure
-          echo "Executing GraphQL query..."
-          gh api graphql -F projectId="$PROJECT_ID" -f query="$query" > project_data.json || {
-            echo "ERROR: 'gh api graphql' command failed. API Response was:"
-            cat project_data.json # Print the raw response (likely contains API error)
-            exit 1 # Exit the script with failure status
-          }
+            # Check for query success
+            if [ $? -ne 0 ]; then
+              echo "ERROR: GraphQL query failed."
+              echo "$response"
+              exit 1
+            fi
 
-          echo "GraphQL query command succeeded. Response saved to project_data.json. Checking content..."
+            # Append response to project_data.json
+            jq -s '.[0].data.node.items.nodes + .[1].data.node.items.nodes' project_data.json <(echo "$response") > temp.json && mv temp.json project_data.json
 
-          # Check if the expected data structure exists in the response using refined jq check
-          if ! jq -e '.data.node // empty' project_data.json > /dev/null; then
-            echo "ERROR: '.data.node' not found in the GraphQL response, or response was empty/invalid."
-            echo "--- Start of project_data.json content ---"
-            jq . project_data.json # Print the JSON response for debugging
-            echo "--- End of project_data.json content ---"
-            exit 1 # Exit the script with failure status
-          fi
+            # Update pagination variables
+            has_next_page=$(echo "$response" | jq -r '.data.node.items.pageInfo.hasNextPage')
+            end_cursor=$(echo "$response" | jq -r '.data.node.items.pageInfo.endCursor')
+          done
 
-          echo "Successfully fetched and validated project data."
+          echo "Successfully fetched all project data."
 
       - name: Process Data and Generate CSV
         id: generate_csv
         run: |
           # Define CSV Header
-          header='"Issue Number","Issue Title","State","Repository","URL","Created At","Updated At","Closed At","Author","Assignees","Labels","Milestone","Issue Type","Parent Issue #","Parent Issue Title","Project Sprint","Project Status","Project Team"'
+          header='"Issue Number","Issue Title","State","Repository","URL","Created At","Updated At","Closed At","Author","Assignees","Labels","Milestone","Sprint","Status","Team"'
 
-          # Use jq to transform JSON to CSV rows, handling potential nulls
-          # Note: Adjust field names ("Sprint", "Status", "Team") if they differ in your project
+          # Use jq to transform JSON to CSV rows
           csv_data=$(jq -r '
-            .data.node.items.nodes | .[] | select(.content != null and .content.__typename == "Issue") | # Filter for actual issues
-            [
+            . | .[] | select(.content != null and .content.__typename == "Issue") | [
               .content.number // "",
               .content.title // "",
               .content.state // "",
@@ -124,31 +121,27 @@ jobs:
               .content.updatedAt // "",
               .content.closedAt // "",
               .content.author.login // "",
-              (.content.assignees.nodes | map(.login) | join(",")) // "", # Join assignees if multiple
-              (.content.labels.nodes | map(.name) | join(",")) // "",    # Join labels if multiple
+              (.content.assignees.nodes | map(.login) | join(",")) // "",
+              (.content.labels.nodes | map(.name) | join(",")) // "",
               .content.milestone.title // "",
-              .content.issueType.name // "", # Keep this, will be populated if type is set
-              .content.parent.number // "",
-              .content.parent.title // "",
-              # Extract Project Fields - use "? == field_name" for safety if field might not exist
               (.fieldValues.nodes | map(select(.field.name? == "Sprint")) | first | .title // ""),
               (.fieldValues.nodes | map(select(.field.name? == "Status")) | first | .name // ""),
               (.fieldValues.nodes | map(select(.field.name? == "Team")) | first | .name // "")
-            ] | @csv # Format array as CSV row
+            ] | @csv
           ' project_data.json)
 
           # Combine header and data, save to file
           output_file="${{ inputs.output_filename }}"
           echo "$header" > "$output_file"
-          if [[ -n "$csv_data" ]]; then # Only add data if jq produced output
-             echo "$csv_data" >> "$output_file"
+          if [[ -n "$csv_data" ]]; then
+            echo "$csv_data" >> "$output_file"
           fi
 
           echo "CSV report generated: $output_file"
-          echo "report_path=$output_file" >> $GITHUB_OUTPUT # Make path available to other steps
+          echo "::set-output name=report_path::$output_file"
 
       - name: Upload CSV Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: project-issues-report # Name of the artifact zip file
-          path: ${{ steps.generate_csv.outputs.report_path }} # Path to the generated CSV
+          name: project-issues-report
+          path: ${{ steps.generate_csv.outputs.report_path }}
