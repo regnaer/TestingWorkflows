@@ -17,7 +17,7 @@ jobs:
   fetch-all-items:
     runs-on: ubuntu-latest
     permissions:
-      contents: read # Needed for checkout, although not strictly used by the script itself
+      contents: read # Needed for checkout
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,6 +31,7 @@ jobs:
           OUTPUT_FILENAME: ${{ inputs.output_filename }}
         run: |
           echo "Starting fetch for Project ID: $PROJECT_ID"
+          echo "Output filename: $OUTPUT_FILENAME"
 
           # Define the GraphQL query with a variable for the cursor
           read -r -d '' query << EOF
@@ -82,55 +83,85 @@ jobs:
 
           # Initialize variables for pagination
           all_nodes_json='[]' # Start with an empty JSON array for all nodes
-          cursor="null"       # Start with null cursor for the first page
+          cursor="null"       # Start with null cursor for the first page (JSON null)
           has_next_page=true  # Assume there's at least one page
           page_count=0
           max_pages=200       # Safety break to prevent infinite loops
+
+          # Retry mechanism parameters
+          MAX_RETRIES=3
+          RETRY_DELAY=5 # seconds
 
           echo "Starting pagination loop..."
 
           while $has_next_page; do
             page_count=$((page_count + 1))
-            echo "Fetching page $page_count with cursor: $cursor"
+            echo "--- Preparing page $page_count ---"
+            echo "Cursor for this page: $cursor"
 
-            # Execute the query for the current page
-            # Use --argjson for cursor to correctly handle the 'null' string as JSON null
-            if ! gh api graphql -F projectId="$PROJECT_ID" -f query="$query" --argjson itemsCursor "$cursor" > page_data.json; then
-              echo "ERROR: 'gh api graphql' command failed on page $page_count."
-              if [[ -s page_data.json ]]; then
-                echo "API Response:"
-                jq . page_data.json || cat page_data.json
+            # --- Start Retry Loop for API Call ---
+            retry_count=0
+            success=false
+            while [[ $retry_count -lt $MAX_RETRIES ]]; do
+              echo "Attempting API call (Attempt $((retry_count + 1))/$MAX_RETRIES) for page $page_count..."
+              # Use --argjson for cursor to correctly handle the 'null' string as JSON null
+              if gh api graphql -F projectId="$PROJECT_ID" -f query="$query" --argjson itemsCursor "$cursor" > page_data.json; then
+                echo "API call successful for page $page_count."
+                success=true
+                break # Exit retry loop on success
               else
-                echo "No response received from the API."
+                echo "ERROR: 'gh api graphql' command failed on page $page_count (Attempt $((retry_count + 1))). Waiting ${RETRY_DELAY}s..."
+                # Optionally print response even on failure if file has content
+                if [[ -s page_data.json ]]; then
+                     echo "--- Start of failed API Response ---"
+                     jq . page_data.json || cat page_data.json
+                     echo "--- End of failed API Response ---"
+                fi
+                sleep $RETRY_DELAY
+                retry_count=$((retry_count + 1))
               fi
+            done # End Retry Loop
+
+            # Check if all retries failed
+            if [[ "$success" != "true" ]]; then
+              echo "ERROR: Reached maximum retry limit ($MAX_RETRIES) for page $page_count. Exiting."
               exit 1
             fi
+            # --- End Retry Loop for API Call ---
 
+
+            echo "Validating response for page $page_count..."
             # Validate basic response structure
             if ! jq -e '.data.node.items' page_data.json > /dev/null; then
-               echo "ERROR: '.data.node.items' not found in GraphQL response on page $page_count."
+               echo "ERROR: '.data.node.items' not found in GraphQL response on page $page_count even after successful API call."
                echo "--- Start of page_data.json content ---"
                jq . page_data.json || cat page_data.json
                echo "--- End of page_data.json content ---"
                exit 1
             fi
+            echo "Response validation passed for page $page_count."
 
             # Extract nodes from the current page
             current_page_nodes=$(jq -c '.data.node.items.nodes // []' page_data.json)
+            echo "Extracted $(echo "$current_page_nodes" | jq length) nodes from page $page_count."
 
             # Extract pageInfo
             page_info=$(jq -c '.data.node.items.pageInfo // {"hasNextPage": false, "endCursor": null}' page_data.json)
             has_next_page=$(echo "$page_info" | jq -r '.hasNextPage')
             new_cursor=$(echo "$page_info" | jq -r '.endCursor // "null"') # Get new cursor, default to "null" string if missing
 
-            # Append current page nodes to the main list using jq's stream/add capability
-            # Reads the existing list, then the new list, and sums them (array concatenation)
+            # Append current page nodes to the main list
             all_nodes_json=$(jq -s '.[0] + .[1]' <(echo "$all_nodes_json") <(echo "$current_page_nodes"))
+            echo "Total nodes accumulated: $(echo "$all_nodes_json" | jq length)"
 
-            # Update cursor for the next iteration - ensure it's quoted for --argjson
-            cursor="\"$new_cursor\""
+            # Update cursor for the next iteration - ensure it's quoted for --argjson processing if not null
+            if [[ "$new_cursor" == "null" ]]; then
+                cursor="null"
+            else
+                cursor="\"$new_cursor\""
+            fi
 
-            echo "Page $page_count fetched. hasNextPage: $has_next_page. New cursor: $new_cursor"
+            echo "Page $page_count processed. hasNextPage: $has_next_page. Next cursor: $new_cursor"
 
             # Safety break
             if [[ $page_count -ge $max_pages ]]; then
@@ -140,22 +171,28 @@ jobs:
 
             # Break loop if hasNextPage is false
             if [[ "$has_next_page" != "true" ]]; then
-              echo "No more pages found."
+              echo "No more pages indicated by hasNextPage."
               break
             fi
-          done
+          done # End Main Pagination Loop
 
           echo "Pagination complete. Total pages fetched: $page_count"
+          echo "Total nodes collected: $(echo "$all_nodes_json" | jq length)"
 
           # Construct the final JSON object embedding the aggregated nodes
-          # We use the structure of the first page's response as a template, but replace items.nodes
-          # Get the base structure from the first page (or last page if only one)
-          base_structure=$(jq '.data' page_data.json)
-          # Inject the aggregated nodes array into the structure
-          final_json=$(echo "$base_structure" | jq --argjson nodes "$all_nodes_json" '.node.items.nodes = $nodes')
-          # Wrap it back in the top-level "data" key
-          final_output=$(jq -n --argjson data "$final_json" '{"data": $data}')
-
+          # Get the base structure from the last successful page_data.json
+          if [[ -f page_data.json ]]; then
+              base_structure=$(jq '.data' page_data.json)
+              # Inject the aggregated nodes array into the structure
+              final_json=$(echo "$base_structure" | jq --argjson nodes "$all_nodes_json" '.node.items.nodes = $nodes')
+              # Wrap it back in the top-level "data" key
+              final_output=$(jq -n --argjson data "$final_json" '{"data": $data}')
+          else
+              # Handle case where no pages were successfully fetched (e.g., project empty or immediate error)
+              echo "Warning: No page data was successfully processed. Creating basic JSON structure."
+              final_output=$(jq -n --argjson nodes "$all_nodes_json" \
+                              '{data: {node: {items: {nodes: $nodes, pageInfo:{hasNextPage:false, endCursor:null}}}}}')
+          fi
 
           # Save the final aggregated JSON to the output file
           echo "$final_output" > "$OUTPUT_FILENAME"
