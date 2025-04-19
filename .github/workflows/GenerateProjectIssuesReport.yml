@@ -1,7 +1,7 @@
 name: Generate Project Issues Report
 
 on:
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
     inputs:
       project_node_id:
         description: 'The Node ID of the ProjectV2 board (e.g., PVT_...)'
@@ -17,7 +17,7 @@ jobs:
   build-report:
     runs-on: ubuntu-latest
     permissions:
-      contents: read # Needed for checkout
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,7 +25,6 @@ jobs:
       - name: Fetch Project Data via GraphQL (with Pagination)
         id: fetch_data
         env:
-          # Use a Classic PAT stored as a secret. Needs 'repo' and 'project' scopes.
           GH_TOKEN: ${{ secrets.GH_PAT_PROJECTS }}
           PROJECT_ID: ${{ inputs.project_node_id }}
         run: |
@@ -34,7 +33,7 @@ jobs:
           # Initialize loop variables
           has_next_page=true
           end_cursor=null
-          > project_data.json # Start fresh
+          > project_data.json
 
           # Loop to handle pagination
           while [ "$has_next_page" = "true" ]; do
@@ -55,7 +54,8 @@ jobs:
                             ... on ProjectV2ItemFieldNumberValue { number field { name } }
                             ... on ProjectV2ItemFieldSingleSelectValue { name field { name } }
                             ... on ProjectV2ItemFieldIterationValue { title startDate duration field { name } }
-                            # Add other types here if applicable
+                            # Add a fallback for unexpected types
+                            __typename
                           }
                         }
                         content {
@@ -86,15 +86,16 @@ jobs:
               }'
             )
 
-            # Check for query success
+            # Check for query success and log response
             if [ $? -ne 0 ]; then
               echo "ERROR: GraphQL query failed."
+              echo "Response:"
               echo "$response"
               exit 1
             fi
 
             # Append response to project_data.json
-            jq -s '.[0].data.node.items.nodes + .[1].data.node.items.nodes' project_data.json <(echo "$response") > temp.json && mv temp.json project_data.json
+            echo "$response" | jq '.data.node.items.nodes' >> project_data.json
 
             # Update pagination variables
             has_next_page=$(echo "$response" | jq -r '.data.node.items.pageInfo.hasNextPage')
@@ -107,7 +108,7 @@ jobs:
         id: generate_csv
         run: |
           # Define CSV Header
-          header='"Issue Number","Issue Title","State","Repository","URL","Created At","Updated At","Closed At","Author","Assignees","Labels","Milestone","Sprint","Status","Team"'
+          header='"Issue Number","Issue Title","State","Repository","URL","Created At","Updated At","Closed At","Author","Assignees","Labels","Milestone","Sprint","Status","Team","Field Type"'
 
           # Use jq to transform JSON to CSV rows
           csv_data=$(jq -r '
@@ -126,7 +127,8 @@ jobs:
               .content.milestone.title // "",
               (.fieldValues.nodes | map(select(.field.name? == "Sprint")) | first | .title // ""),
               (.fieldValues.nodes | map(select(.field.name? == "Status")) | first | .name // ""),
-              (.fieldValues.nodes | map(select(.field.name? == "Team")) | first | .name // "")
+              (.fieldValues.nodes | map(select(.field.name? == "Team")) | first | .name // ""),
+              (.fieldValues.nodes | map(.__typename | tostring) | join("|")) // "" # Include type debugging
             ] | @csv
           ' project_data.json)
 
