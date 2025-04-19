@@ -1,0 +1,102 @@
+# This query fetches items directly from a specific ProjectV2 (identified by its Node ID)
+# and then retrieves details for the underlying Issues, including their standard fields
+# (like milestone, closedAt), project field values, and new fields (issueType, parent).
+
+query GetProjectItemsAndIssueDetails(
+  $projectId: ID! # Pass your Project Node ID here
+) {
+  node(id: $projectId) { # Look up the project by its Node ID
+    ... on ProjectV2 {
+      id
+      title
+      number # Project number
+
+      # Get items in the project (issues, PRs, draft issues)
+      items(first: 100) { # Adjust 'first' as needed, handle pagination
+        nodes {
+          id # Project Item Node ID
+
+          # --- Get ProjectV2 Field Values for this item ---
+          fieldValues(first: 20) { # Adjust 'first' if many fields
+            nodes {
+              # Use inline fragments to get value based on field type
+              ... on ProjectV2ItemFieldTextValue {
+                text
+                field { ... on ProjectV2Field { name id } }
+              }
+              ... on ProjectV2ItemFieldDateValue {
+                date
+                field { ... on ProjectV2Field { name id } }
+              }
+              ... on ProjectV2ItemFieldNumberValue {
+                number
+                field { ... on ProjectV2Field { name id } }
+              }
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name # The selected option's name
+                optionId # The selected option's Node ID
+                field { ... on ProjectV2SingleSelectField { name id } } # The field itself
+              }
+              ... on ProjectV2ItemFieldIterationValue {
+                title
+                startDate
+                duration
+                iterationId # Iteration Node ID
+                field { ... on ProjectV2IterationField { name id } } # The field itself
+              }
+              # Add fragments for other types as needed
+            }
+          }
+
+          # --- Get details about the content (if it's an Issue) ---
+          content {
+            ... on Issue {
+              # --- Standard Issue Fields ---
+              id # Issue Node ID
+              number
+              title
+              state
+              createdAt
+              updatedAt
+              closedAt
+              url
+              author { login }
+              assignees(first: 10) { nodes { login } }
+              labels(first: 20) { nodes { name color } }
+              milestone { # <-- Milestone (already present)
+                 title
+                 number
+                 state
+              }
+              issueType { # <-- Added Issue Type
+                name
+              }
+              parent { # <-- Added Parent Issue details
+                ... on Issue { # Specify fields for the parent if it's an Issue
+                  title
+                  number
+                  url
+                  id
+                  issueType {
+                     name
+                  }
+                }
+              }
+
+              # --- Get Repository Info for Filtering ---
+              repository {
+                nameWithOwner # Get "owner/repo" string
+              }
+            }
+            # ... on PullRequest { repository { nameWithOwner } ... }
+            # ... on DraftIssue { ... }
+          }
+        }
+        pageInfo {
+          endCursor
+          hasNextPage
+        }
+      }
+    }
+  }
+}
