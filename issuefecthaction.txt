@@ -1,0 +1,194 @@
+name: Generate Project Issues Report
+
+on:
+  workflow_dispatch: # Allows manual triggering
+    inputs:
+      project_node_id:
+        description: 'The Node ID of the ProjectV2 board (e.g., PVT_...)'
+        required: true
+        type: string
+      output_filename:
+        description: 'Filename for the CSV report (e.g., report.csv)'
+        required: false
+        type: string
+        default: 'project_issues_report.csv'
+
+jobs:
+  build-report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Needed for checkout
+      # No explicit project permissions here, relies on PAT
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Project Data via GraphQL
+        id: fetch_data
+        env:
+          # Use a PAT stored as a secret. Needs 'repo', 'project', 'read:user' scopes.
+          # GITHUB_TOKEN likely won't have access to user projects or needed scopes.
+          GH_TOKEN: ${{ secrets.GH_PAT_PROJECTS }}
+          PROJECT_ID: ${{ inputs.project_node_id }}
+        run: |
+          # Store the GraphQL query in a variable
+          read -r -d '' query << EOF
+          query GetProjectItemsAndIssueDetails(\$projectId: ID!) {
+            node(id: \$projectId) {
+              ... on ProjectV2 {
+                id
+                title
+                number
+                items(first: 100) { # Adjust 'first' or implement pagination if needed
+                  nodes {
+                    id
+                    fieldValues(first: 20) {
+                      nodes {
+                        ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name id } } }
+                        ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2Field { name id } } }
+                        ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name id } } }
+                        ... on ProjectV2ItemFieldSingleSelectValue { name optionId field { ... on ProjectV2SingleSelectField { name id } } }
+                        ... on ProjectV2ItemFieldIterationValue { title startDate duration iterationId field { ... on ProjectV2IterationField { name id } } }
+                      }
+                    }
+                    content {
+                      ... on Issue {
+                        id
+                        number
+                        title
+                        state
+                        createdAt
+                        updatedAt
+                        closedAt
+                        url
+                        author { login }
+                        assignees(first: 10) { nodes { login } }
+                        labels(first: 20) { nodes { name color } }
+                        milestone { title number state }
+                        issueType { name }
+                        parent {
+                          ... on Issue { title number url id issueType { name } }
+                        }
+                        repository { nameWithOwner }
+                      }
+                    }
+                  }
+                  pageInfo { endCursor hasNextPage }
+                }
+              }
+            }
+          }
+          EOF
+
+          # Execute the query using GitHub CLI and save to file
+          gh api graphql -F projectId="$PROJECT_ID" -f query="$query" > project_data.json
+
+          echo "GraphQL query executed. Response saved to project_data.json"
+          # Check if data node exists to prevent jq errors later
+          if ! jq -e '.data.node' project_data.json > /dev/null; then
+            echo "Error: '.data.node' not found in the GraphQL response."
+            jq . project_data.json # Print response for debugging
+            exit 1
+          fi
+
+      - name: Process Data and Generate CSV
+        id: generate_csv
+        run: |
+          # Define CSV Header
+          header='"Issue Number","Issue Title","State","Repository","URL","Created At","Updated At","Closed At","Author","Assignees","Labels","Milestone","Issue Type","Parent Issue #","Parent Issue Title","Project Sprint","Project Status","Project Team"'
+
+          # Use jq to transform JSON to CSV rows, handling potential nulls
+          # Note: Adjust field names ("Sprint", "Status", "Team") if they differ in your project
+          csv_data=$(jq -r '
+            .data.node.items.nodes | .[] | select(.content != null and .content.__typename == "Issue") | # Filter for actual issues
+            [
+              .content.number // "",
+              .content.title // "",
+              .content.state // "",
+              .content.repository.nameWithOwner // "",
+              .content.url // "",
+              .content.createdAt // "",
+              .content.updatedAt // "",
+              .content.closedAt // "",
+              .content.author.login // "",
+              (.content.assignees.nodes | map(.login) | join(",")) // "", # Join assignees if multiple
+              (.content.labels.nodes | map(.name) | join(",")) // "",    # Join labels if multiple
+              .content.milestone.title // "",
+              .content.issueType.name // "", # Keep this, will be populated if type is set
+              .content.parent.number // "",
+              .content.parent.title // "",
+              # Extract Project Fields - use "? == field_name" for safety if field might not exist
+              (.fieldValues.nodes | map(select(.field.name? == "Sprint")) | first | .title // ""),
+              (.fieldValues.nodes | map(select(.field.name? == "Status")) | first | .name // ""),
+              (.fieldValues.nodes | map(select(.field.name? == "Team")) | first | .name // "")
+            ] | @csv # Format array as CSV row
+          ' project_data.json)
+
+          # Combine header and data, save to file
+          output_file="${{ inputs.output_filename }}"
+          echo "$header" > "$output_file"
+          if [[ -n "$csv_data" ]]; then # Only add data if jq produced output
+             echo "$csv_data" >> "$output_file"
+          fi
+
+          echo "CSV report generated: $output_file"
+          echo "report_path=$output_file" >> $GITHUB_OUTPUT # Make path available to other steps
+
+      - name: Upload CSV Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-issues-report # Name of the artifact zip file
+          path: ${{ steps.generate_csv.outputs.report_path }} # Path to the generated CSV
+
+
+
+Additional Notes:
+
+Explanation:
+
+  Trigger (on: workflow_dispatch): Allows you to manually run this workflow from the Actions tab in your GitHub repository.
+  Inputs:
+    project_node_id: You must provide the ProjectV2 Node ID when running the workflow.
+    output_filename: Optionally specify the name for the CSV file (defaults to project_issues_report.csv).
+  Job (build-report): Runs the steps on an Ubuntu runner.
+  Permissions: Sets basic read permissions for checkout. The critical permissions for accessing project data come from the PAT.
+  Checkout Step: Checks out your repository code (good practice).
+  Fetch Project Data Step:
+    Uses the gh CLI (pre-installed on runners) to execute gh api graphql.
+    Reads the GraphQL query into a shell variable (query).
+    Sets the GH_TOKEN environment variable using a Personal Access Token (PAT) stored as a secret named GH_PAT_PROJECTS.
+      IMPORTANT: You need to create a PAT (Classic or Fine-Grained) with repo, project, and read:user scopes. Store this PAT as a repository or organization secret called GH_PAT_PROJECTS. The default GITHUB_TOKEN usually lacks the necessary permissions, especially for user-level projects or if specific permissions aren't granted at the org level.
+    Passes the project_node_id input as a GraphQL variable (-F projectId=...).
+    Executes the query and saves the raw JSON response to project_data.json.
+    Includes a basic check to ensure the expected data structure (.data.node) exists in the response.
+  Process Data and Generate CSV Step:
+    Defines the CSV header row.
+    Uses jq to parse project_data.json:
+      Filters the items.nodes array to only include actual Issues (select(.content != null and .content.__typename == "Issue")).
+      For each issue, it creates an array containing the desired fields in order.
+      It uses // "" to provide an empty string if a field is null (e.g., closedAt, milestone.title, parent.number, issueType.name). This prevents jq errors and keeps columns aligned.
+      It extracts the specific project field values ("Sprint", "Status", "Team") by searching within the fieldValues.nodes array for the correct field name. Make sure these names match your project's custom fields exactly.
+      The join(",") part handles potential multi-value fields like assignees or labels.
+      @csv formats the array as a properly quoted and escaped CSV row.
+    Combines the header and the generated data rows into the output file specified by the input output_filename.
+    Sets the report_path output variable for the next step.
+  Upload CSV Report Artifact Step:
+    Uses the actions/upload-artifact action.
+    Uploads the generated CSV file (${{ steps.generate_csv.outputs.report_path }}) as a workflow artifact named project-issues-report. You can download this artifact from the workflow run summary page.
+
+Before Running:
+
+  Create PAT: Generate a GitHub Personal Access Token (Classic or Fine-Grained) with repo, project, and read:user scopes.
+  Add Secret: Go to your repository's Settings > Secrets and variables > Actions. Create a new repository secret named GH_PAT_PROJECTS and paste your PAT value into it.
+  Commit Workflow: Add the .github/workflows/project_report.yml file to your repository and push the changes.
+
+How to Run:
+
+  Go to the "Actions" tab of your repository on GitHub.
+  Find "Generate Project Issues Report" in the list of workflows on the left.
+  Click the "Run workflow" dropdown button.
+  Enter the correct ProjectV2 Node ID in the project_node_id input field.
+  Optionally change the output_filename.
+  Click "Run workflow".
+
+Once the workflow completes successfully, go to the summary page for that run, and you will find the project-issues-report artifact available for download, containing your CSV file.
