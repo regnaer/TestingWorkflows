@@ -41,50 +41,98 @@ jobs:
 
             # Execute GraphQL query with pagination
             response=$(gh api graphql -F projectId="$PROJECT_ID" -F endCursor="$end_cursor" -f query='
-              query GetProjectItemsAndIssueDetails($projectId: ID!, $endCursor: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $endCursor) {
-                      nodes {
-                        id
-                        fieldValues(first: 20) {
-                          nodes {
-                            ... on ProjectV2ItemFieldTextValue { text field { name } }
-                            ... on ProjectV2ItemFieldDateValue { date field { name } }
-                            ... on ProjectV2ItemFieldNumberValue { number field { name } }
-                            ... on ProjectV2ItemFieldSingleSelectValue { name field { name } }
-                            ... on ProjectV2ItemFieldIterationValue { title startDate duration field { name } }
-                            ... on ProjectV2ItemFieldReviewerValue { reviewers { nodes { login } } field { name } }
-                            __typename
+            query GetProjectItemsAndIssueDetails($projectId: ID!, $endCursor: String) {
+              node(id: $projectId) {
+                ... on ProjectV2 {
+                  items(first: 100, after: $endCursor) {
+                    nodes {
+                      id
+                      fieldValues(first: 20) {
+                        nodes {
+                          ... on ProjectV2ItemFieldTextValue {
+                            text
+                            field {
+                              name
+                            }
                           }
-                        }
-                        content {
-                          ... on Issue {
-                            id
+                          ... on ProjectV2ItemFieldDateValue {
+                            date
+                            field {
+                              name
+                            }
+                          }
+                          ... on ProjectV2ItemFieldNumberValue {
                             number
+                            field {
+                              name
+                            }
+                          }
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                            field {
+                              name
+                            }
+                          }
+                          ... on ProjectV2ItemFieldIterationValue {
                             title
-                            state
-                            createdAt
-                            updatedAt
-                            closedAt
-                            url
-                            author { login }
-                            assignees(first: 10) { nodes { login } }
-                            labels(first: 20) { nodes { name } }
-                            milestone { title }
-                            repository { nameWithOwner }
+                            startDate
+                            duration
+                            field {
+                              name
+                            }
+                          }
+                          ... on ProjectV2ItemFieldReviewerValue {
+                            reviewers {
+                              nodes {
+                                login
+                              }
+                            }
+                            field {
+                              name
+                            }
                           }
                         }
                       }
-                      pageInfo {
-                        endCursor
-                        hasNextPage
+                      content {
+                        ... on Issue {
+                          id
+                          number
+                          title
+                          state
+                          createdAt
+                          updatedAt
+                          closedAt
+                          url
+                          author {
+                            login
+                          }
+                          assignees(first: 10) {
+                            nodes {
+                              login
+                            }
+                          }
+                          labels(first: 20) {
+                            nodes {
+                              name
+                            }
+                          }
+                          milestone {
+                            title
+                          }
+                          repository {
+                            nameWithOwner
+                          }
+                        }
                       }
+                    }
+                    pageInfo {
+                      endCursor
+                      hasNextPage
                     }
                   }
                 }
-              }'
-            )
+              }
+            }
 
             # Check for query success and log response
             if [ $? -ne 0 ]; then
