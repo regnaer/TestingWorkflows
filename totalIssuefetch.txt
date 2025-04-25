@@ -1,106 +1,167 @@
-GraphQL Query
+name: Fetch Project Issues
 
-query GetProjectItemsAndIssueDetails(
-  $projectId: ID! # Pass your Project Node ID here
-  $afterCursor: String # Pass the cursor for pagination
-) {
-  node(id: $projectId) { # Look up the project by its Node ID
-    ... on ProjectV2 {
-      id
-      title
-      number # Project number
+on:
+  workflow_dispatch: # Allows you to manually trigger the workflow
 
-      # Get items in the project (issues, PRs, draft issues)
-      items(first: 100, after: $afterCursor) { # Fetch 100 items per request, handle pagination
-        nodes {
-          id # Project Item Node ID
+permissions:
+  contents: read
+  id-token: write
 
-          # --- Get ProjectV2 Field Values for this item ---
-          fieldValues(first: 20) { # Adjust 'first' if many fields
-            nodes {
-              # Use inline fragments to get value based on field type
-              ... on ProjectV2ItemFieldTextValue {
-                text
-                field { ... on ProjectV2Field { name id } }
-              }
-              ... on ProjectV2ItemFieldDateValue {
-                date
-                field { ... on ProjectV2Field { name id } }
-              }
-              ... on ProjectV2ItemFieldNumberValue {
-                number
-                field { ... on ProjectV2Field { name id } }
-              }
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                name # The selected option's name
-                optionId # The selected option's Node ID
-                field { ... on ProjectV2SingleSelectField { name id } } # The field itself
-              }
-              ... on ProjectV2ItemFieldIterationValue {
+jobs:
+  fetch-issues:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      # Step 3: Fetch issues using GitHub GraphQL API and save as JSON
+      - name: Fetch Issues
+        id: fetch_issues
+        run: |
+          echo 'Fetching issues from the project...'
+          PROJECT_ID="Project ID" # Replace with your hardcoded Project ID
+          AFTER_CURSOR=null  # Start with no pagination cursor
+
+          QUERY=$(cat <<EOF
+          query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
+            node(id: "$PROJECT_ID") {
+              ... on ProjectV2 {
+                id
                 title
-                startDate
-                duration
-                iterationId # Iteration Node ID
-                field { ... on ProjectV2IterationField { name id } } # The field itself
-              }
-              # Add fragments for other types as needed
-            }
-          }
-
-          # --- Get details about the content (if it's an Issue) ---
-          content {
-            ... on Issue {
-              # --- Standard Issue Fields ---
-              id # Issue Node ID
-              number
-              title
-              state
-              createdAt
-              updatedAt
-              closedAt
-              url
-              author { login }
-              assignees(first: 10) { nodes { login } }
-              labels(first: 20) { nodes { name color } }
-              milestone { # <-- Milestone (already present)
-                 title
-                 number
-                 state
-              }
-              issueType { # <-- Added Issue Type
-                name
-              }
-              parent { # <-- Added Parent Issue details
-                ... on Issue { # Specify fields for the parent if it's an Issue
-                  title
-                  number
-                  url
-                  id
-                  issueType {
-                     name
+                number
+                items(first: 100, after: \$afterCursor) {
+                  nodes {
+                    id
+                    fieldValues(first: 20) {
+                      nodes {
+                        ... on ProjectV2ItemFieldTextValue {
+                          text
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
+                        }
+                        ... on ProjectV2ItemFieldDateValue {
+                          date
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          number
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
+                        }
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          name
+                          optionId
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          title
+                          startDate
+                          duration
+                          iterationId
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
+                        }
+                      }
+                    }
+                    content {
+                      ... on Issue {
+                        id
+                        number
+                        title
+                        state
+                        createdAt
+                        updatedAt
+                        closedAt
+                        url
+                        author { login }
+                        assignees(first: 10) { nodes { login } }
+                        labels(first: 20) { nodes { name color } }
+                        milestone {
+                          title
+                          number
+                          state
+                        }
+                        issueType {
+                          name
+                        }
+                        parent {
+                          ... on Issue {
+                            title
+                            number
+                            url
+                            id
+                            issueType {
+                              name
+                            }
+                          }
+                        }
+                        repository {
+                          nameWithOwner
+                        }
+                      }
+                    }
+                  }
+                  pageInfo {
+                    endCursor
+                    hasNextPage
                   }
                 }
               }
-
-              # --- Get Repository Info for Filtering ---
-              repository {
-                nameWithOwner # Get "owner/repo" string
-              }
             }
-            # ... on PullRequest { repository { nameWithOwner } ... }
-            # ... on DraftIssue { ... }
           }
-        }
-        pageInfo {
-          endCursor
-          hasNextPage
-        }
-      }
-    }
-  }
-}
+          EOF
+          )
 
-Variable
-{
-  "projectId": "Project Node ID"
-}
+          RESPONSE=$(curl -s -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.PAT }}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg query "$QUERY" --argjson vars "{\"afterCursor\":$AFTER_CURSOR}" '{query: $query, variables: $vars}')" \
+            https://api.github.com/graphql)
+
+          HTTP_STATUS="${RESPONSE: -3}" # Extract HTTP status code
+          RESPONSE_BODY="${RESPONSE::-3}" # Extract response body (everything except last 3 characters)
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Error: Failed to fetch project issues. HTTP Status: $HTTP_STATUS"
+            echo "Response: $RESPONSE_BODY"
+            exit 1
+          fi
+
+          # Save response to file
+          echo "$RESPONSE_BODY" > project-issues.json
+
+      # Step 4: Upload the JSON file as an artifact
+      - name: Upload JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-issues
+          path: project-issues.json
