@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: read
-  projects: read
+  id-token: write
 
 jobs:
   fetch-issues:
