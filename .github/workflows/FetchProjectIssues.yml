@@ -25,7 +25,7 @@ jobs:
       - name: Fetch Issues
         id: fetch_issues
         run: |
-          set -e  # Exit immediately if a command exits with a non-zero status
+          set -ex  # Enable debugging mode and print each command before execution
           echo 'Fetching issues from the project...'
           PROJECT_ID="PVT_kwHOAYT8e84A0x6m" # Replace with your hardcoded Project ID
           AFTER_CURSOR=null  # Start with no pagination cursor
@@ -37,14 +37,15 @@ jobs:
           echo "Initialized OUTPUT_FILE with empty JSON array."
 
           while [ "$HAS_NEXT_PAGE" = "true" ]; do
-            QUERY=$(cat <<EOF
-            query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
+            echo "Starting a new iteration of fetching issues..."
+            QUERY=$(cat <<'EOF'
+            query GetProjectItemsAndIssueDetails($afterCursor: String) {
               node(id: "$PROJECT_ID") {
                 ... on ProjectV2 {
                   id
                   title
                   number
-                  items(first: 100, after: \$afterCursor) {
+                  items(first: 100, after: $afterCursor) {
                     nodes {
                       id
                       fieldValues(first: 20) {
@@ -147,7 +148,7 @@ jobs:
               }
             }
             EOF
-            )
+                        )
 
             # Debugging: Log the query being sent
             echo "GraphQL Query: $QUERY"
