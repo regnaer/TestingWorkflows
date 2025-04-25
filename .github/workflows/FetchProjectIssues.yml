@@ -33,9 +33,6 @@ jobs:
           OUTPUT_FILE="project-issues.json"
           echo "[]" > $OUTPUT_FILE  # Initialize an empty JSON array to store all results
 
-          # Debugging: Add log to examine initial state
-          echo "Initialized OUTPUT_FILE with empty JSON array."
-
           while [ "$HAS_NEXT_PAGE" = "true" ]; do
             echo "Starting a new iteration of fetching issues..."
             QUERY=$(cat <<EOF
@@ -147,16 +144,15 @@ jobs:
                 }
               }
             }
-            EOF
+          EOF
             )
-            # Debugging: Log the query being sent
-            echo "GraphQL Query: $QUERY"
 
             # Make the API request
+            PAYLOAD=$(jq -n --arg query "$QUERY" --argjson vars "{\"afterCursor\":$AFTER_CURSOR}" '{query: $query, variables: $vars}')
             RESPONSE=$(curl -s -w "%{http_code}" \
               -H "Authorization: Bearer ${{ secrets.PAT }}" \
               -H "Content-Type: application/json" \
-              -d "$(jq -n --arg query "$QUERY" --argjson vars "{\"afterCursor\":$AFTER_CURSOR}" '{query: $query, variables: $vars}')" \
+              -d "$PAYLOAD" \
               https://api.github.com/graphql)
 
             HTTP_STATUS="${RESPONSE: -3}" # Extract HTTP status code
@@ -176,11 +172,6 @@ jobs:
             ITEMS=$(echo "$RESPONSE_BODY" | jq '.data.node.items.nodes')
             END_CURSOR=$(echo "$RESPONSE_BODY" | jq -r '.data.node.items.pageInfo.endCursor')
             HAS_NEXT_PAGE=$(echo "$RESPONSE_BODY" | jq -r '.data.node.items.pageInfo.hasNextPage')
-
-            # Debugging: Log the extracted items, endCursor, and hasNextPage
-            echo "Extracted Items: $ITEMS"
-            echo "End Cursor: $END_CURSOR"
-            echo "Has Next Page: $HAS_NEXT_PAGE"
 
             # Append items to output file
             jq -c --argjson newItems "$ITEMS" '. + $newItems' $OUTPUT_FILE > temp.json && mv temp.json $OUTPUT_FILE
