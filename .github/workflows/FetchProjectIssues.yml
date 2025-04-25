@@ -38,14 +38,14 @@ jobs:
 
           while [ "$HAS_NEXT_PAGE" = "true" ]; do
             echo "Starting a new iteration of fetching issues..."
-            QUERY=$(cat <<'EOF'
-            query GetProjectItemsAndIssueDetails($afterCursor: String) {
+            QUERY=$(cat <<EOF
+            query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
               node(id: "$PROJECT_ID") {
                 ... on ProjectV2 {
                   id
                   title
                   number
-                  items(first: 100, after: $afterCursor) {
+                  items(first: 100, after: \$afterCursor) {
                     nodes {
                       id
                       fieldValues(first: 20) {
@@ -148,8 +148,7 @@ jobs:
               }
             }
             EOF
-                        )
-
+            )
             # Debugging: Log the query being sent
             echo "GraphQL Query: $QUERY"
 
