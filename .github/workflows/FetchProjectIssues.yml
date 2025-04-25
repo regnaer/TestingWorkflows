@@ -146,7 +146,7 @@ jobs:
                 }
               }
             }
-EOF
+            EOF
             )
 
             # Debugging: Log the query being sent
