@@ -27,7 +27,7 @@ jobs:
 
           QUERY=$(cat <<EOF
           query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
-            node(id: "$PROJECT_ID") {
+            node(id: "PVT_kwHOAYT8e84A0x6m") {
               ... on ProjectV2 {
                 id
                 title
