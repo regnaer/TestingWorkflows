@@ -22,11 +22,12 @@ jobs:
         id: fetch_issues
         run: |
           echo 'Fetching issues from the project...'
+          PROJECT_ID="PVT_kwHOAYT8e84A0x6m" # Replace with your hardcoded Project ID
           AFTER_CURSOR=null  # Start with no pagination cursor
 
           QUERY=$(cat <<EOF
           query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
-            node(id: "PVT_kwHOAYT8e84A0x6m") {
+            node(id: "$PROJECT_ID") {
               ... on ProjectV2 {
                 id
                 title
@@ -38,27 +39,52 @@ jobs:
                       nodes {
                         ... on ProjectV2ItemFieldTextValue {
                           text
-                          field { name id }
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
                         }
                         ... on ProjectV2ItemFieldDateValue {
                           date
-                          field { name id }
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
                         }
                         ... on ProjectV2ItemFieldNumberValue {
                           number
-                          field { name id }
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
                         }
                         ... on ProjectV2ItemFieldSingleSelectValue {
                           name
                           optionId
-                          field { name id }
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
                         }
                         ... on ProjectV2ItemFieldIterationValue {
                           title
                           startDate
                           duration
                           iterationId
-                          field { name id }
+                          field {
+                            ... on ProjectV2FieldCommon {
+                              name
+                              id
+                            }
+                          }
                         }
                       }
                     }
@@ -75,18 +101,28 @@ jobs:
                         author { login }
                         assignees(first: 10) { nodes { login } }
                         labels(first: 20) { nodes { name color } }
-                        milestone { title number state }
-                        issueType { name }
+                        milestone {
+                          title
+                          number
+                          state
+                        }
+                        issueType {
+                          name
+                        }
                         parent {
                           ... on Issue {
                             title
                             number
                             url
                             id
-                            issueType { name }
+                            issueType {
+                              name
+                            }
                           }
                         }
-                        repository { nameWithOwner }
+                        repository {
+                          nameWithOwner
+                        }
                       }
                     }
                   }
