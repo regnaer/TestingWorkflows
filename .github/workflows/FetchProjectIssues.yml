@@ -1,0 +1,118 @@
+name: Fetch Project Issues
+
+on:
+  workflow_dispatch: # Allows you to manually trigger the workflow
+
+jobs:
+  fetch-issues:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      # Step 3: Fetch issues using GitHub GraphQL API and save as JSON
+      - name: Fetch Issues
+        id: fetch_issues
+        run: |
+          echo 'Fetching issues from the project...'
+          PROJECT_ID="PVT_kwHOAYT8e84A0x6m" # Replace with your hardcoded Project ID
+          AFTER_CURSOR=null  # Start with no pagination cursor
+
+          QUERY=$(cat <<EOF
+          query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
+            node(id: "$PROJECT_ID") {
+              ... on ProjectV2 {
+                id
+                title
+                number
+                items(first: 100, after: \$afterCursor) {
+                  nodes {
+                    id
+                    fieldValues(first: 20) {
+                      nodes {
+                        ... on ProjectV2ItemFieldTextValue {
+                          text
+                          field { name id }
+                        }
+                        ... on ProjectV2ItemFieldDateValue {
+                          date
+                          field { name id }
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          number
+                          field { name id }
+                        }
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          name
+                          optionId
+                          field { name id }
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          title
+                          startDate
+                          duration
+                          iterationId
+                          field { name id }
+                        }
+                      }
+                    }
+                    content {
+                      ... on Issue {
+                        id
+                        number
+                        title
+                        state
+                        createdAt
+                        updatedAt
+                        closedAt
+                        url
+                        author { login }
+                        assignees(first: 10) { nodes { login } }
+                        labels(first: 20) { nodes { name color } }
+                        milestone { title number state }
+                        issueType { name }
+                        parent {
+                          ... on Issue {
+                            title
+                            number
+                            url
+                            id
+                            issueType { name }
+                          }
+                        }
+                        repository { nameWithOwner }
+                      }
+                    }
+                  }
+                  pageInfo {
+                    endCursor
+                    hasNextPage
+                  }
+                }
+              }
+            }
+          }
+          EOF
+          )
+
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg query "$QUERY" --argjson vars "{\"afterCursor\":$AFTER_CURSOR}" '{query: $query, variables: $vars}')" \
+            https://api.github.com/graphql)
+
+          echo "$RESPONSE" > project-issues.json
+
+      # Step 4: Upload the JSON file as an artifact
+      - name: Upload JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-issues
+          path: project-issues.json
