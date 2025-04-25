@@ -25,12 +25,16 @@ jobs:
       - name: Fetch Issues
         id: fetch_issues
         run: |
+          set -e  # Exit immediately if a command exits with a non-zero status
           echo 'Fetching issues from the project...'
           PROJECT_ID="PVT_kwHOAYT8e84A0x6m" # Replace with your hardcoded Project ID
           AFTER_CURSOR=null  # Start with no pagination cursor
           HAS_NEXT_PAGE=true
           OUTPUT_FILE="project-issues.json"
           echo "[]" > $OUTPUT_FILE  # Initialize an empty JSON array to store all results
+
+          # Debugging: Add log to examine initial state
+          echo "Initialized OUTPUT_FILE with empty JSON array."
 
           while [ "$HAS_NEXT_PAGE" = "true" ]; do
             QUERY=$(cat <<EOF
@@ -142,8 +146,11 @@ jobs:
                 }
               }
             }
-            EOF
+EOF
             )
+
+            # Debugging: Log the query being sent
+            echo "GraphQL Query: $QUERY"
 
             # Make the API request
             RESPONSE=$(curl -s -w "%{http_code}" \
@@ -155,6 +162,10 @@ jobs:
             HTTP_STATUS="${RESPONSE: -3}" # Extract HTTP status code
             RESPONSE_BODY="${RESPONSE::-3}" # Extract response body (everything except last 3 characters)
 
+            # Debugging: Log the HTTP status and response
+            echo "HTTP Status: $HTTP_STATUS"
+            echo "Response Body: $RESPONSE_BODY"
+
             if [ "$HTTP_STATUS" -ne 200 ]; then
               echo "Error: Failed to fetch project issues. HTTP Status: $HTTP_STATUS"
               echo "Response: $RESPONSE_BODY"
@@ -165,6 +176,11 @@ jobs:
             ITEMS=$(echo "$RESPONSE_BODY" | jq '.data.node.items.nodes')
             END_CURSOR=$(echo "$RESPONSE_BODY" | jq -r '.data.node.items.pageInfo.endCursor')
             HAS_NEXT_PAGE=$(echo "$RESPONSE_BODY" | jq -r '.data.node.items.pageInfo.hasNextPage')
+
+            # Debugging: Log the extracted items, endCursor, and hasNextPage
+            echo "Extracted Items: $ITEMS"
+            echo "End Cursor: $END_CURSOR"
+            echo "Has Next Page: $HAS_NEXT_PAGE"
 
             # Append items to output file
             jq -c --argjson newItems "$ITEMS" '. + $newItems' $OUTPUT_FILE > temp.json && mv temp.json $OUTPUT_FILE
