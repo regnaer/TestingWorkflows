@@ -102,13 +102,23 @@ jobs:
           EOF
           )
 
-          RESPONSE=$(curl -s \
+          RESPONSE=$(curl -s -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg query "$QUERY" --argjson vars "{\"afterCursor\":$AFTER_CURSOR}" '{query: $query, variables: $vars}')" \
             https://api.github.com/graphql)
 
-          echo "$RESPONSE" > project-issues.json
+          HTTP_STATUS="${RESPONSE: -3}" # Extract HTTP status code
+          RESPONSE_BODY="${RESPONSE::-3}" # Extract response body (everything except last 3 characters)
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Error: Failed to fetch project issues. HTTP Status: $HTTP_STATUS"
+            echo "Response: $RESPONSE_BODY"
+            exit 1
+          fi
+
+          # Save response to file
+          echo "$RESPONSE_BODY" > project-issues.json
 
       # Step 4: Upload the JSON file as an artifact
       - name: Upload JSON as Artifact
