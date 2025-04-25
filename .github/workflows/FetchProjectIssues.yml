@@ -3,6 +3,10 @@ name: Fetch Project Issues
 on:
   workflow_dispatch: # Allows you to manually trigger the workflow
 
+permissions:
+  contents: read
+  projects: read
+
 jobs:
   fetch-issues:
     runs-on: ubuntu-latest
@@ -27,7 +31,7 @@ jobs:
 
           QUERY=$(cat <<EOF
           query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
-            node(id: "PVT_kwHOAYT8e84A0x6m") {
+            node(id: "$PROJECT_ID") {
               ... on ProjectV2 {
                 id
                 title
@@ -138,7 +142,7 @@ jobs:
           )
 
           RESPONSE=$(curl -s -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.PAT }}" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg query "$QUERY" --argjson vars "{\"afterCursor\":$AFTER_CURSOR}" '{query: $query, variables: $vars}')" \
             https://api.github.com/graphql)
