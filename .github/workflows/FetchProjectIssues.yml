@@ -22,12 +22,11 @@ jobs:
         id: fetch_issues
         run: |
           echo 'Fetching issues from the project...'
-          PROJECT_ID="PVT_kwHOAYT8e84A0x6m" # Replace with your hardcoded Project ID
           AFTER_CURSOR=null  # Start with no pagination cursor
 
           QUERY=$(cat <<EOF
           query GetProjectItemsAndIssueDetails(\$afterCursor: String) {
-            node(id: "$PROJECT_ID") {
+            node(id: "PVT_kwHOAYT8e84A0x6m") {
               ... on ProjectV2 {
                 id
                 title
